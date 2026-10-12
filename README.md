@@ -1,5 +1,7 @@
 # TFM-TEM-Inversion
 
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Offline](https://img.shields.io/badge/100%25-Offline-brightgreen)
+
 时频电磁法（TFM / TEM & IP）一体化处理系统 —— 对标商业 WLF 软件的**纯 Python** 实现。
 覆盖从 WLF 原始二进制采集档（DAT）→ 预处理 → 视电阻率 → 1D 电阻率反演（多算法）→
 IP 极化率反演 → Occam1D / WLF EXE 桥接的完整流程。
@@ -75,6 +77,30 @@ python tfm_cli_run.py --project demo_data\myfile_demo --out demo_out --current -
 6. **WLF 2D/3D** — TRANS24 / SWP24D / 3D tomo 桥接
 7. **Tx Current** — 发射电流档波形与 QC
 
+## 示例运行结果
+
+以下结果由 `make_demo_data.py` 生成的合成数据（1线 × 2 section，16 测站 S1-1..S1-16）经
+`tfm_cli_run.py --current --inv-algo all` 全流程产出。预处理 16/16 站通过 QC（400 道 ρa 数据），
+发射电流 QC 正常（Ex 双极性方波平台 1.90e6 counts ≈ 0.45 V，t_off = 19.99 ms）。
+
+| 1D 反演算法 | 站数 | RMSE_log10 中位数 |
+|---|---|---|
+| TRF（信赖域，默认） | 16 | 0.827 |
+| LM（Levenberg-Marquardt） | 16 | 0.827 |
+| Occam（纯 Python 光滑反演） | 16 | 0.914 |
+
+解读：三种算法在同一数据集上结果一致（RMSE_log10 < 1.0 属骨架版扩散深度正演的合理区间），
+TRF/LM 拟合略优且带边界约束更稳健；Occam 光滑模型作交叉验证。若需压低整体 RMSE，
+按调参纪律先调 `RHOA_SCALE_CAL`（ρa 全局校准），再调 `LAMBDA_SMOOTH` / `LAMBDA_INIT`。
+
+| 发射电流波形 QC | ρa 视电阻率断面 |
+|---|---|
+| ![current](docs/images/current_waveforms.png) | ![rhoa](docs/images/rhoa_section.png) |
+
+| 三算法反演断面对比 | TRF 反演真电阻率断面 |
+|---|---|
+| ![compare](docs/images/inv_compare.png) | ![trf](docs/images/inv_trf_section.png) |
+
 ## 数据格式说明
 
 ### DAT 二进制契约（tfm_engine/dat_parser.py 严格校验）
@@ -130,4 +156,8 @@ python tfm_cli_run.py --project demo_data\myfile_demo --out demo_out --current -
 
 ## 许可证
 
-（占位 —— License TBD）
+本项目采用 [MIT License](LICENSE)。Copyright (c) 2026 TFM-TEM-Inversion contributors。
+
+---
+
+English README → [README_EN.md](README_EN.md)
