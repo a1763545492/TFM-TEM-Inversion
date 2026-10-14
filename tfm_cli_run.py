@@ -32,6 +32,7 @@ from tfm_engine.inversion  import run_all_inversions, DEFAULT_INV_CFG
 from tfm_engine.occam_bridge import materialize_all
 from tfm_engine.inv_algorithms import run_all_algo, run_all_algos_compare, ALGO_CHOICES
 from tfm_engine.adv_inversion import run_all_advanced, ALGO_ADVANCED
+from tfm_engine.lci_inversion import run_all_lci
 from tfm_engine.current_proc import run_all_current
 
 
@@ -121,10 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--current', dest='do_current', action='store_true', default=False,
                    help='运行 Step0: 发射电流档处理 (CXXST01 波形/幅值/关断 QC)')
     p.add_argument('--inv-algo', default='trf',
-                   choices=list(ALGO_CHOICES) + list(ALGO_ADVANCED) + ['all'],
+                   choices=list(ALGO_CHOICES) + list(ALGO_ADVANCED) + ['lci', 'all'],
                    help='1D 反演算法: trf(默认)/lm/occam/all 或高级算法 '
                         'occam_adaptive(λ自动寻优+L曲线) / lm_adaptive(Nielsen阻尼) / '
-                        'cgls(共轭梯度) / mcmc(后验不确定性)')
+                        'cgls(共轭梯度) / mcmc(后验不确定性) / '
+                        'lci(横向约束联合反演,拟2D断面)')
 
     # ------- Occam 桥接参数 -------
     p.add_argument('--occam-exe', default='Occam1D.exe',
@@ -165,6 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help='启用逐站缓存断点续跑 (cfg 变更自动失效)')
     hp_inv.add_argument('--mcmc-samples', type=int, default=2000,
                         help='MCMC 采样数 (仅 --inv-algo mcmc 有效, 默认 2000)')
+    hp_inv.add_argument('--lambda-lat', type=float, default=1.0,
+                        help='★ LCI 首选调参. 横向约束权重 (默认 1.0; 越大断面越匀)')
     return p
 
 
@@ -247,6 +251,12 @@ def main(argv=None) -> int:
                                                     occam_cfg={'LAMBDA_INIT': args.lambda_init},
                                                     n_jobs=args.n_jobs, use_cache=args.use_cache,
                                                     log_fn=log_fn)
+            elif algo == 'lci':
+                log_fn(f'\n>>> [Step3] LCI 横向约束联合反演 启动 '
+                       f'λ_lat={args.lambda_lat} n_jobs={args.n_jobs}')
+                inv_summary = run_all_lci(out_root,
+                                          user_cfg={**cfg_inv, 'LAMBDA_LAT': args.lambda_lat},
+                                          n_jobs=args.n_jobs, log_fn=log_fn)
             elif algo in ALGO_ADVANCED:
                 log_fn(f'\n>>> [Step3] 高级 1D 反演 启动 [algo={algo}] '
                        f'n_jobs={args.n_jobs} cache={args.use_cache}')

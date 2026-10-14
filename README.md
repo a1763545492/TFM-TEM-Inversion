@@ -20,6 +20,7 @@ IP 极化率反演 → Occam1D / WLF EXE 桥接的完整流程。
 | 层状模型正演 | 1D TEM 正演：Guptasarma 61 点汉克尔变换 + Anderson 频→时转换，支持 Cole-Cole IP |
 | 1D 反演（多算法） | TRF（信赖域，默认）/ LM / 纯 Python Occam（光滑反演），支持三算法对比 |
 | 1D 反演（高级算法） | 自适应 Occam（λ 自动寻优 + L 曲线诊断图）/ Nielsen 自适应阻尼 LM / CGLS 共轭梯度 / MCMC 后验不确定性量化 |
+| 拟 2D 反演 | LCI 横向约束联合反演（Auken & Christiansen）：相邻测站模型加横向平滑，产出连续拟 2D 断面 |
 | 工程性能 | 多进程并行逐站反演（`--n-jobs`）、逐站缓存断点续跑（`--use-cache`，cfg 变更自动失效） |
 | IP 极化率反演 | Pelton Cole-Cole 4 参数（ρ, m, τ, c），share-τ/c 稳健模式 |
 | IP 谱反演 | 双 Cole-Cole 项拟合、Debye 分解弛豫谱（NNLS 非负约束，debye_inversion） |
@@ -36,13 +37,13 @@ TFM-TEM-Inversion/
   tfm_gui.py           # GUI 入口（7 页签）
   tfm_cli_run.py       # CLI 无头入口（完整流水线）
   make_demo_data.py    # 合成示例数据生成器
-  tfm_engine/          # 处理引擎包（15 个模块）
+  tfm_engine/          # 处理引擎包（16 个模块）
     dat_parser.py        excel_meta.py    coord_loader.py
     preprocess.py        preprocess_plus.py
     inversion.py         inv_algorithms.py  ip_inversion.py
     forward.py           occam_bridge.py    signal_viz.py
     wlf_bridge.py        current_proc.py
-    adv_inversion.py     debye_inversion.py
+    adv_inversion.py     debye_inversion.py lci_inversion.py
 ```
 
 ## 安装
@@ -139,6 +140,8 @@ TRF/LM 拟合略优且带边界约束更稳健；Occam 光滑模型作交叉验�
 - **自适应 LM**：Nielsen 阻尼策略（cost 下降 λ×0.5 / 上升 λ×4），按 JᵀJ 对角线缩放，全程有界
 - **CGLS**：模型空间共轭梯度（Rodi-Mackie 风格），免矩阵求逆，解 (JᵀJ+λDᵀD)δ=−Jᵀr
 - **MCMC**：Metropolis-Hastings 后验采样（先 TRF 取 MAP 初值），输出后验均值/标准差/95% HPD 及后验剖面诊断图
+- **LCI 横向约束反演**：Auken & Christiansen 2004 联合反演，相邻测站模型加横向平滑约束（按站间距加权），
+  采用 scipy.sparse 块对角雅可比结构 + lsmr 迭代求解，支持 TRF 热启动加速，产出连续拟 2D 断面
 - **IP 反演**：Pelton Cole-Cole 4 参数模型（ρ, m, τ, c），支持 τ/c 全线共享的稳健模式
 - **IP 谱反演**：双 Cole-Cole 项（两种弛豫机制分离）与 Debye 分解（15 个对数等距弛豫 + NNLS 非负谱）
 
@@ -146,7 +149,8 @@ TRF/LM 拟合略优且带边界约束更稳健；Occam 光滑模型作交叉验�
 
 1. **RHOA_SCALE_CAL**（预处理，默认 1e6）：ρa 全局校准倍率，第一调参入口（`--rhoa-scale`）
 2. **LAMBDA_SMOOTH**（1D 反演，默认 0.3）：层间平滑权重（`--lambda-smooth`）
-3. **LAMBDA_INIT**（Occam，默认 1.0）：初始正则化因子，按 0.1→1→10 扫描（`--lambda-init`）
+3. **LAMBDA_LAT**（LCI，默认 1.0）：横向约束权重，越大断面越匀，按 0.1→1→10 扫描（`--lambda-lat`）
+4. **LAMBDA_INIT**（Occam，默认 1.0）：初始正则化因子，按 0.1→1→10 扫描（`--lambda-init`）
 
 每次只动一个参数，观察 RMSE 与断面形态后再进下一步。
 
@@ -160,6 +164,7 @@ TRF/LM 拟合略优且带边界约束更稳健；Occam 光滑模型作交叉验�
 | `X线_inv_{algo}_R.npy` / `_depth.npy` | 反演真电阻率张量 [station, 层] 与层中心深度 |
 | `X线_inv_{algo}_summary.csv` | 逐站 RMSE / nfev / ρ 范围 |
 | `X线_inv_{algo}_section.png` | 1D 反演真电阻率断面图 |
+| `X线_inv_lci_section.png` | LCI 拟 2D 断面（左：LCI；右：独立 1D 对比） |
 | `X线_current_summary.csv` / `_waveforms.png` | 发射电流 QC 汇总与波形图 |
 | `cli_run_*.log` / `cli_summary_*.json` / `preprocess_report_*.json` | 运行日志与参数快照 |
 

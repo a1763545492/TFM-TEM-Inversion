@@ -51,6 +51,7 @@ from tfm_engine.inversion import run_all_inversions
 from tfm_engine.inv_algorithms import (run_all_algo, run_all_algos_compare,
                                        ALGO_CHOICES)
 from tfm_engine.adv_inversion import run_all_advanced, ALGO_ADVANCED
+from tfm_engine.lci_inversion import run_all_lci
 from tfm_engine.current_proc import run_all_current
 from tfm_engine.occam_bridge import materialize_all
 from tfm_engine.forward import (LayeredModel, tem_forward_1d,
@@ -231,7 +232,7 @@ class TFMMainApp:
         ttk.Combobox(lf_hp, textvariable=self.var_inv_algo, width=18, state="readonly",
                      values=["trf", "lm", "occam",
                              "occam_adaptive", "lm_adaptive", "cgls", "mcmc",
-                             "all(三算法对比)"]
+                             "lci", "all(三算法对比)"]
                      ).grid(row=3, column=1, padx=3, pady=3, sticky="w")
 
         # --- 高级反演参数 (occam_adaptive / lm_adaptive / cgls / mcmc) ---
@@ -247,6 +248,10 @@ class TFMMainApp:
         ttk.Label(lf_hp, text="MCMC采样数:").grid(row=5, column=0, sticky="e", padx=6, pady=3)
         ttk.Entry(lf_hp, textvariable=self.var_mcmc_samples,
                   width=14).grid(row=5, column=1, padx=3, pady=3, sticky="w")
+        ttk.Label(lf_hp, text="LCI λ_lat:").grid(row=5, column=2, sticky="e", padx=6, pady=3)
+        self.var_lambda_lat = tk.StringVar(value="1.0")
+        ttk.Entry(lf_hp, textvariable=self.var_lambda_lat,
+                  width=10).grid(row=5, column=3, padx=3, pady=3, sticky="w")
 
         # --- 执行按钮 ---
         bf = ttk.Frame(p); bf.pack(fill="x", padx=6, pady=8)
@@ -277,7 +282,8 @@ class TFMMainApp:
         pp_cfg = dict(RHOA_SCALE_CAL=float(self.var_hp_rhoa.get()),
                       TEM_N_GATES=int(self.var_hp_ngates.get()))
         inv_cfg = dict(N_LAYERS=int(self.var_hp_nlayers.get()),
-                       LAMBDA_SMOOTH=float(self.var_hp_lam_s.get()))
+                       LAMBDA_SMOOTH=float(self.var_hp_lam_s.get()),
+                       LAMBDA_LAT=float(self.var_lambda_lat.get()))
         return pp_cfg, inv_cfg
 
     def _on_run_basic(self):
@@ -342,6 +348,10 @@ class TFMMainApp:
                 run_all_algos_compare(out, user_cfg=inv_cfg,
                                       occam_cfg={'LAMBDA_INIT': lam_init},
                                       n_jobs=n_jobs, use_cache=use_cache, log_fn=log)
+            elif algo == 'lci':
+                lam_lat = inv_cfg.get('LAMBDA_LAT', 1.0)
+                log(f">>> Step3 LCI 横向约束联合反演 [λ_lat={lam_lat}]  n_jobs={n_jobs}")
+                run_all_lci(out, user_cfg=inv_cfg, n_jobs=n_jobs, log_fn=log)
             elif algo in ALGO_ADVANCED:
                 log(f">>> Step3 1D 高级电阻率反演 [algo={algo}]  "
                     f"n_jobs={n_jobs} cache={use_cache} mcmc_samples={mcmc_samples}")

@@ -36,7 +36,7 @@ tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0
 **统一日志接口**：所有模块接受 log_fn(str) 回调。
 ================================================================================
 """
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 
 # v1 核心模块
 from . import dat_parser
@@ -60,6 +60,8 @@ from . import inv_algorithms    # 多算法 1D 反演
 # v4 扩展模块
 from . import adv_inversion     # 高级反演 (自适应Occam/LM-自适应/CGLS/MCMC) + 并行缓存
 from . import debye_inversion   # IP 谱反演 (双Cole-Cole / Debye NNLS)
+# v5 扩展模块
+from . import lci_inversion     # LCI 横向约束联合反演 (Auken & Christiansen) + 拟2D断面
 
 __all__ = (
     # v1
@@ -72,5 +74,7 @@ __all__ = (
     "current_proc", "inv_algorithms",
     # v4
     "adv_inversion", "debye_inversion",
+    # v5
+    "lci_inversion",
 )
 
