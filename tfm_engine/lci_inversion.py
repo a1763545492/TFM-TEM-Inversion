@@ -285,8 +285,10 @@ def invert_line_lci(line_tag: str, out_root: str | Path,
         X = np.arange(n_st)
         Xmesh, Ymesh = np.meshgrid(X, Y, indexing='ij')
 
-        vmin = np.log10(cfg['RHO_BOUNDS'][0])
-        vmax = np.log10(cfg['RHO_BOUNDS'][1])
+        # 色标用数据 2~98 分位数 (物理上下界跨9个数量级会导致对比度不足)
+        all_vals = np.concatenate([np.log10(np.clip(R_lin, 1e-3, None)).ravel(),
+                                   np.log10(np.clip(R_warm, 1e-3, None)).ravel()])
+        vmin, vmax = np.percentile(all_vals[np.isfinite(all_vals)], [2, 98])
         # LCI
         Z_lci = np.log10(np.clip(R_lin, cfg['RHO_BOUNDS'][0], cfg['RHO_BOUNDS'][1]))
         im1 = ax1.pcolormesh(Xmesh, Ymesh, Z_lci, shading='auto',
