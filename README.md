@@ -18,8 +18,11 @@ IP 极化率反演 → Occam1D / WLF EXE 桥接的完整流程。
 | 预处理 | Inventory → DAT 加载 → Cube 对齐（权威测站编码）→ ADC 换算 → 去 DC → 25 时间门 → ρa（中心回线公式）→ QC → Occam.dat |
 | 增强预处理 | AATZero 关断精修、陷波、带通、MAD 野值剔除、衰减曲线提取（preprocess_plus） |
 | 层状模型正演 | 1D TEM 正演：Guptasarma 61 点汉克尔变换 + Anderson 频→时转换，支持 Cole-Cole IP |
-| 1D 反演（多算法） | TRF（信赖域，默认）/ LM（Levenberg-Marquardt）/ 纯 Python Occam（光滑反演），支持三算法对比 |
+| 1D 反演（多算法） | TRF（信赖域，默认）/ LM / 纯 Python Occam（光滑反演），支持三算法对比 |
+| 1D 反演（高级算法） | 自适应 Occam（λ 自动寻优 + L 曲线诊断图）/ Nielsen 自适应阻尼 LM / CGLS 共轭梯度 / MCMC 后验不确定性量化 |
+| 工程性能 | 多进程并行逐站反演（`--n-jobs`）、逐站缓存断点续跑（`--use-cache`，cfg 变更自动失效） |
 | IP 极化率反演 | Pelton Cole-Cole 4 参数（ρ, m, τ, c），share-τ/c 稳健模式 |
+| IP 谱反演 | 双 Cole-Cole 项拟合、Debye 分解弛豫谱（NNLS 非负约束，debye_inversion） |
 | 信号可视化 | WLF curview/verify 风格：4×4 衰减曲线子图、多站 Hx 叠加 |
 | 桥接 | Occam1D cfg/model-p/BAT 生成（含 dry-run）；WLF TRANS24 格式转换、SWP24D 2D 反演、3D tomo 流水线 |
 
@@ -33,12 +36,13 @@ TFM-TEM-Inversion/
   tfm_gui.py           # GUI 入口（7 页签）
   tfm_cli_run.py       # CLI 无头入口（完整流水线）
   make_demo_data.py    # 合成示例数据生成器
-  tfm_engine/          # 处理引擎包（13 个模块）
+  tfm_engine/          # 处理引擎包（15 个模块）
     dat_parser.py        excel_meta.py    coord_loader.py
     preprocess.py        preprocess_plus.py
     inversion.py         inv_algorithms.py  ip_inversion.py
     forward.py           occam_bridge.py    signal_viz.py
     wlf_bridge.py        current_proc.py
+    adv_inversion.py     debye_inversion.py
 ```
 
 ## 安装
@@ -131,7 +135,12 @@ TRF/LM 拟合略优且带边界约束更稳健；Occam 光滑模型作交叉验�
 - **TRF**：scipy least_squares（信赖域 + 边界 [0.1, 1e8] Ω·m），残差 = 加权对数数据残差 + √λ·层间平滑
 - **LM**：Levenberg-Marquardt 经典阻尼最小二乘（软裁剪无界）
 - **Occam（纯 Python）**：Constable 1987 光滑反演，外环迭代线性化 + λ 搜索使 χ²/N→1
+- **自适应 Occam**：λ 不再预设候选集，改为 12 点对数网格自动寻优（χ²≤target 取最大 λ），输出 L 曲线诊断图
+- **自适应 LM**：Nielsen 阻尼策略（cost 下降 λ×0.5 / 上升 λ×4），按 JᵀJ 对角线缩放，全程有界
+- **CGLS**：模型空间共轭梯度（Rodi-Mackie 风格），免矩阵求逆，解 (JᵀJ+λDᵀD)δ=−Jᵀr
+- **MCMC**：Metropolis-Hastings 后验采样（先 TRF 取 MAP 初值），输出后验均值/标准差/95% HPD 及后验剖面诊断图
 - **IP 反演**：Pelton Cole-Cole 4 参数模型（ρ, m, τ, c），支持 τ/c 全线共享的稳健模式
+- **IP 谱反演**：双 Cole-Cole 项（两种弛豫机制分离）与 Debye 分解（15 个对数等距弛豫 + NNLS 非负谱）
 
 ## 调参纪律（单变量原则，少步长）
 

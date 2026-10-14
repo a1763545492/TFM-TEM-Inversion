@@ -28,11 +28,15 @@ tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0
   [v3 新增 2]
   - current_proc.py      : 发射电流档处理 (平台幅值/关断时刻/纹波 QC + 波形 PNG)
   - inv_algorithms.py    : 1D 电阻率多算法反演 (trf / lm / 纯Python occam) + 算法对比
+  [v4 新增 2]
+  - adv_inversion.py     : 高级反演 (自适应Occam λ寻优+L曲线 / Nielsen LM / CGLS / MCMC不确定性)
+                           + 多进程并行 + 逐站缓存断点续跑
+  - debye_inversion.py   : IP 谱反演 (双Cole-Cole / Debye分解 NNLS 弛豫谱)
 
 **统一日志接口**：所有模块接受 log_fn(str) 回调。
 ================================================================================
 """
-__version__ = "2.1.0"
+__version__ = "2.2.0"
 
 # v1 核心模块
 from . import dat_parser
@@ -53,6 +57,10 @@ from . import wlf_bridge        # WLF EXE 桥接 (2D/3D/格式转换)
 from . import current_proc      # 发射电流档处理
 from . import inv_algorithms    # 多算法 1D 反演
 
+# v4 扩展模块
+from . import adv_inversion     # 高级反演 (自适应Occam/LM-自适应/CGLS/MCMC) + 并行缓存
+from . import debye_inversion   # IP 谱反演 (双Cole-Cole / Debye NNLS)
+
 __all__ = (
     # v1
     "dat_parser", "excel_meta", "coord_loader",
@@ -62,5 +70,7 @@ __all__ = (
     "signal_viz", "wlf_bridge",
     # v3
     "current_proc", "inv_algorithms",
+    # v4
+    "adv_inversion", "debye_inversion",
 )
 

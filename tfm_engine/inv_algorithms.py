@@ -22,7 +22,7 @@ tfm_engine.inv_algorithms (M9)
 完全离线, 纯 numpy + scipy。
 """
 from __future__ import annotations
-import json, re
+import json, re, hashlib
 from pathlib import Path
 from typing import Callable, Optional
 import numpy as np
@@ -203,9 +203,42 @@ def invert_one_station_algo(t_obs, rhoa_obs, err_obs, z_centers, cfg,
     return th, info
 
 
+def _cfg_hash(cfg: dict, algo: str) -> str:
+    s = json.dumps({k: str(v) for k, v in sorted(cfg.items())}, sort_keys=True) + '|' + algo
+    return hashlib.md5(s.encode()).hexdigest()[:12]
+
+
+def _cache_path(out_base: Path, st: str, algo: str, cfg_hash: str) -> Path:
+    return out_base / '_inv_cache' / f'{st}_{algo}_{cfg_hash}.npz'
+
+
+def _algo_station_worker(args: dict):
+    """模块级 worker (Windows spawn 可 pickle)。"""
+    idx = args['idx']; st = args['st']
+    cp = args.get('cache_path')
+    if cp:
+        cp = Path(cp)
+        if cp.is_file():
+            try:
+                d = np.load(cp, allow_pickle=True)
+                return idx, st, d['th'], dict(d['info'].item()), True
+            except Exception:
+                pass
+    th, info = invert_one_station_algo(
+        args['t_obs'], args['rhoa_obs'], args['err_obs'],
+        args['z_c'], args['cfg'], args['algo'], args.get('occam_cfg'))
+    if cp:
+        try:
+            np.savez_compressed(cp, th=th, info=info)
+        except Exception:
+            pass
+    return idx, st, th, info, False
+
+
 def invert_line_algo(line_tag: str, out_root: str | Path, algo: str = 'trf',
                      user_cfg: Optional[dict] = None,
                      occam_cfg: Optional[dict] = None,
+                     n_jobs: int = 1, use_cache: bool = False,
                      log_fn: Optional[Callable[[str], None]] = None) -> dict:
     log_fn = log_fn or (lambda s: print(s))
     cfg = dict(DEFAULT_INV_CFG)
@@ -219,15 +252,43 @@ def invert_line_algo(line_tag: str, out_root: str | Path, algo: str = 'trf',
     df = parse_occam_dat(dat)
     stations = sorted(df.Station.unique())
     z_c = depth_layer_centers(cfg['N_LAYERS'], cfg['Z_MIN_M'], cfg['Z_MAX_M'])
+    cfg_hash = _cfg_hash(cfg, algo)
+    if use_cache:
+        (out_base / '_inv_cache').mkdir(parents=True, exist_ok=True)
     R_log = np.zeros((len(stations), cfg['N_LAYERS']))
     summary = []
+    cache_hits = 0
+
+    args_list = []
     for idx, st in enumerate(stations):
         sub = df[df.Station == st].sort_values('Time_s')
-        th, info = invert_one_station_algo(sub.Time_s.values, sub.AppRes.values,
-                                           sub.StdDev.values, z_c, cfg, algo, occam_cfg)
+        cp = _cache_path(out_base, st, algo, cfg_hash) if use_cache else None
+        args_list.append({
+            'idx': idx, 'st': st,
+            't_obs': sub.Time_s.values, 'rhoa_obs': sub.AppRes.values,
+            'err_obs': sub.StdDev.values,
+            'z_c': z_c, 'cfg': cfg, 'algo': algo, 'occam_cfg': occam_cfg,
+            'cache_path': str(cp) if cp else None,
+        })
+
+    def _collect(idx, st, th, info, hit):
+        nonlocal cache_hits
         R_log[idx] = th
         info['Station'] = st
         summary.append(info)
+        if hit: cache_hits += 1
+
+    if n_jobs > 1:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        with ProcessPoolExecutor(max_workers=n_jobs) as exe:
+            futures = [exe.submit(_algo_station_worker, a) for a in args_list]
+            for fut in as_completed(futures):
+                _collect(*fut.result())
+    else:
+        for a in args_list:
+            _collect(*_algo_station_worker(a))
+    if cache_hits:
+        log_fn(f'  [CACHE] {line_tag}[{algo}] 命中 {cache_hits}/{len(stations)} 站')
     R_lin = 10.0 ** R_log
     np.save(out_base / f'{line_tag}_inv_{algo}_R.npy', R_lin)
     np.save(out_base / f'{line_tag}_inv_{algo}_depth.npy', z_c)
@@ -260,24 +321,28 @@ def invert_line_algo(line_tag: str, out_root: str | Path, algo: str = 'trf',
 
 def run_all_algo(out_root: str | Path, algo: str = 'trf',
                  user_cfg: Optional[dict] = None, occam_cfg: Optional[dict] = None,
+                 n_jobs: int = 1, use_cache: bool = False,
                  log_fn: Optional[Callable[[str], None]] = None) -> dict:
     log_fn = log_fn or (lambda s: print(s))
     out_root = Path(out_root)
     lines = sorted([p.name for p in out_root.iterdir() if p.is_dir()
                     and re.fullmatch(r'[1-5]线', p.name)])
     log_fn(f'\n========== 多算法 1D 反演  algo={algo}  测线={lines} ==========')
-    return {lt: invert_line_algo(lt, out_root, algo, user_cfg, occam_cfg, log_fn)
+    return {lt: invert_line_algo(lt, out_root, algo, user_cfg, occam_cfg,
+                                 n_jobs, use_cache, log_fn)
             for lt in lines}
 
 
 def run_all_algos_compare(out_root: str | Path, algos=('trf', 'lm', 'occam'),
                           user_cfg: Optional[dict] = None,
                           occam_cfg: Optional[dict] = None,
+                          n_jobs: int = 1, use_cache: bool = False,
                           log_fn: Optional[Callable[[str], None]] = None) -> dict:
     """跑全部算法 + 每线生成对比断面图 + 全线算法对比 CSV."""
     log_fn = log_fn or (lambda s: print(s))
     out_root = Path(out_root)
-    results = {a: run_all_algo(out_root, a, user_cfg, occam_cfg, log_fn) for a in algos}
+    results = {a: run_all_algo(out_root, a, user_cfg, occam_cfg,
+                               n_jobs, use_cache, log_fn) for a in algos}
     comp_rows = []
     for lt in sorted({k for r in results.values() for k in r.keys()}):
         Rs, rmses = [], {}

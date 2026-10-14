@@ -50,6 +50,7 @@ from tfm_engine.preprocess import run_full_preprocess
 from tfm_engine.inversion import run_all_inversions
 from tfm_engine.inv_algorithms import (run_all_algo, run_all_algos_compare,
                                        ALGO_CHOICES)
+from tfm_engine.adv_inversion import run_all_advanced, ALGO_ADVANCED
 from tfm_engine.current_proc import run_all_current
 from tfm_engine.occam_bridge import materialize_all
 from tfm_engine.forward import (LayeredModel, tem_forward_1d,
@@ -222,14 +223,30 @@ class TFMMainApp:
             lbl.grid(row=r, column=c, sticky="e", padx=6, pady=3)
             ttk.Entry(lf_hp, textvariable=v, width=14).grid(row=r, column=c + 1, padx=3, pady=3, sticky="w")
 
-        # --- 1D 反演算法选择 (trf / lm / occam / all=三算法对比) ---
+        # --- 1D 反演算法选择 (trf / lm / occam / 高级算法 / all=三算法对比) ---
         ttk.Label(lf_hp, text="1D 反演算法:",
                   foreground="#0a5cad", font=("Microsoft YaHei", 9, "bold")
                   ).grid(row=3, column=0, sticky="e", padx=6, pady=3)
         self.var_inv_algo = tk.StringVar(value="trf")
-        ttk.Combobox(lf_hp, textvariable=self.var_inv_algo, width=12, state="readonly",
-                     values=list(ALGO_CHOICES) + ["all(三算法对比)"]
+        ttk.Combobox(lf_hp, textvariable=self.var_inv_algo, width=18, state="readonly",
+                     values=["trf", "lm", "occam",
+                             "occam_adaptive", "lm_adaptive", "cgls", "mcmc",
+                             "all(三算法对比)"]
                      ).grid(row=3, column=1, padx=3, pady=3, sticky="w")
+
+        # --- 高级反演参数 (occam_adaptive / lm_adaptive / cgls / mcmc) ---
+        self.var_n_jobs = tk.StringVar(value="1")
+        self.var_use_cache = tk.BooleanVar(value=False)
+        self.var_mcmc_samples = tk.StringVar(value="2000")
+        ttk.Label(lf_hp, text="并行进程数:").grid(row=4, column=0, sticky="e", padx=6, pady=3)
+        ttk.Spinbox(lf_hp, from_=1, to=32, textvariable=self.var_n_jobs,
+                    width=12).grid(row=4, column=1, padx=3, pady=3, sticky="w")
+        ttk.Checkbutton(lf_hp, text="启用缓存断点续跑",
+                        variable=self.var_use_cache).grid(row=4, column=2, columnspan=2,
+                                                          sticky="w", padx=6, pady=3)
+        ttk.Label(lf_hp, text="MCMC采样数:").grid(row=5, column=0, sticky="e", padx=6, pady=3)
+        ttk.Entry(lf_hp, textvariable=self.var_mcmc_samples,
+                  width=14).grid(row=5, column=1, padx=3, pady=3, sticky="w")
 
         # --- 执行按钮 ---
         bf = ttk.Frame(p); bf.pack(fill="x", padx=6, pady=8)
@@ -274,11 +291,15 @@ class TFMMainApp:
                            *self._collect_cfg(),
                            self.var_occam_exe.get(),
                            float(self.var_hp_lam_i.get()),
-                           self.var_inv_algo.get())
+                           self.var_inv_algo.get(),
+                           int(self.var_n_jobs.get()),
+                           self.var_use_cache.get(),
+                           int(self.var_mcmc_samples.get()))
 
     def _worker_basic(self, project, out, do_s12, do_pp, do_inv, do_ip,
                       do_occam, do_sig, pp_cfg, inv_cfg, occam_exe, lam_init,
-                      inv_algo="trf"):
+                      inv_algo="trf", n_jobs=1, use_cache=False,
+                      mcmc_samples=2000):
         log = self.log
         t0 = time.time()
         log("=" * 64); log(" GUI 全流水线 启动 100% OFFLINE")
@@ -313,17 +334,25 @@ class TFMMainApp:
                         log(f"  [WARN] overlay {lt}: {exc}", level="W")
                 log(f"  信号 PNG: {total_png} 张")
             log("<<< Step1-2+ 完成")
-        # Step3 电阻率反演 (多算法选择)
+        # Step3 电阻率反演 (多算法选择, 含高级算法 occam_adaptive/lm_adaptive/cgls/mcmc)
         if do_inv:
             algo = (inv_algo or "trf").strip()
             if algo.startswith("all"):
-                log(">>> Step3 1D 电阻率反演 [trf+lm+occam 三算法对比]")
+                log(f">>> Step3 1D 电阻率反演 [trf+lm+occam 三算法对比]  n_jobs={n_jobs} cache={use_cache}")
                 run_all_algos_compare(out, user_cfg=inv_cfg,
-                                      occam_cfg={'LAMBDA_INIT': lam_init}, log_fn=log)
+                                      occam_cfg={'LAMBDA_INIT': lam_init},
+                                      n_jobs=n_jobs, use_cache=use_cache, log_fn=log)
+            elif algo in ALGO_ADVANCED:
+                log(f">>> Step3 1D 高级电阻率反演 [algo={algo}]  "
+                    f"n_jobs={n_jobs} cache={use_cache} mcmc_samples={mcmc_samples}")
+                run_all_advanced(out, algo=algo, user_cfg=inv_cfg,
+                                 n_jobs=n_jobs, use_cache=use_cache,
+                                 mcmc_samples=mcmc_samples, log_fn=log)
             else:
-                log(f">>> Step3 1D 电阻率反演 [algo={algo}]")
+                log(f">>> Step3 1D 电阻率反演 [algo={algo}]  n_jobs={n_jobs} cache={use_cache}")
                 run_all_algo(out, algo=algo, user_cfg=inv_cfg,
-                             occam_cfg={'LAMBDA_INIT': lam_init}, log_fn=log)
+                             occam_cfg={'LAMBDA_INIT': lam_init},
+                             n_jobs=n_jobs, use_cache=use_cache, log_fn=log)
             log("<<< Step3 完成")
         # Step3+ IP 反演
         if do_ip:

@@ -31,6 +31,7 @@ from tfm_engine.preprocess import run_full_preprocess, DEFAULT_CFG
 from tfm_engine.inversion  import run_all_inversions, DEFAULT_INV_CFG
 from tfm_engine.occam_bridge import materialize_all
 from tfm_engine.inv_algorithms import run_all_algo, run_all_algos_compare, ALGO_CHOICES
+from tfm_engine.adv_inversion import run_all_advanced, ALGO_ADVANCED
 from tfm_engine.current_proc import run_all_current
 
 
@@ -120,8 +121,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--current', dest='do_current', action='store_true', default=False,
                    help='运行 Step0: 发射电流档处理 (CXXST01 波形/幅值/关断 QC)')
     p.add_argument('--inv-algo', default='trf',
-                   choices=list(ALGO_CHOICES) + ['all'],
-                   help='1D 反演算法: trf(默认) / lm / occam / all=三算法对比')
+                   choices=list(ALGO_CHOICES) + list(ALGO_ADVANCED) + ['all'],
+                   help='1D 反演算法: trf(默认)/lm/occam/all 或高级算法 '
+                        'occam_adaptive(λ自动寻优+L曲线) / lm_adaptive(Nielsen阻尼) / '
+                        'cgls(共轭梯度) / mcmc(后验不确定性)')
 
     # ------- Occam 桥接参数 -------
     p.add_argument('--occam-exe', default='Occam1D.exe',
@@ -156,6 +159,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help='初始电阻率 Ω·m (默认 100)')
     hp_inv.add_argument('--rho-bounds', type=str, default=None,
                         help='电阻率上下界, 格式 "lo,hi" (默认 "0.1,1e8")')
+    hp_inv.add_argument('--n-jobs', type=int, default=1,
+                        help='并行进程数 (默认 1=串行; >1 启用 ProcessPool 逐站并行)')
+    hp_inv.add_argument('--use-cache', action='store_true', default=False,
+                        help='启用逐站缓存断点续跑 (cfg 变更自动失效)')
+    hp_inv.add_argument('--mcmc-samples', type=int, default=2000,
+                        help='MCMC 采样数 (仅 --inv-algo mcmc 有效, 默认 2000)')
     return p
 
 
@@ -231,15 +240,26 @@ def main(argv=None) -> int:
     if args.do_inv and rc == 0:
         try:
             cfg_inv = _merge_inv_cfg(args, log_fn)
-            if args.inv_algo == 'all':
+            algo = args.inv_algo
+            if algo == 'all':
                 log_fn('\n>>> [Step3] 1D 反演 三算法对比 (trf/lm/occam)')
                 inv_summary = run_all_algos_compare(out_root, user_cfg=cfg_inv,
                                                     occam_cfg={'LAMBDA_INIT': args.lambda_init},
+                                                    n_jobs=args.n_jobs, use_cache=args.use_cache,
                                                     log_fn=log_fn)
+            elif algo in ALGO_ADVANCED:
+                log_fn(f'\n>>> [Step3] 高级 1D 反演 启动 [algo={algo}] '
+                       f'n_jobs={args.n_jobs} cache={args.use_cache}')
+                inv_summary = run_all_advanced(out_root, algo=algo, user_cfg=cfg_inv,
+                                               n_jobs=args.n_jobs, use_cache=args.use_cache,
+                                               mcmc_samples=args.mcmc_samples,
+                                               log_fn=log_fn)
             else:
-                log_fn(f'\n>>> [Step3] 1D 反演 启动 [algo={args.inv_algo}]')
-                inv_summary = run_all_algo(out_root, algo=args.inv_algo, user_cfg=cfg_inv,
+                log_fn(f'\n>>> [Step3] 1D 反演 启动 [algo={algo}] '
+                       f'n_jobs={args.n_jobs} cache={args.use_cache}')
+                inv_summary = run_all_algo(out_root, algo=algo, user_cfg=cfg_inv,
                                            occam_cfg={'LAMBDA_INIT': args.lambda_init},
+                                           n_jobs=args.n_jobs, use_cache=args.use_cache,
                                            log_fn=log_fn)
             summary['inversion'] = inv_summary
             log_fn('<<< [Step3] 1D反演完成')
