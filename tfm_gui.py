@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-tfm_gui.py (M6 Final Upgrade: TEM-Full-Feature)
+tfm_gui.py (M6 Final Upgrade: WLF-Full-Feature)
 =================================================
 ttk.Notebook 6 Tabs 完整集成：
   [1] Basic Pipeline (原 GUI: 路径/Steps/HP 3★/开始处理)
@@ -8,7 +8,7 @@ ttk.Notebook 6 Tabs 完整集成：
   [3] Forward Compare (选模型.dat + 选 Occam station → 正演叠加对比)
   [4] Signal Viewer (从 decay_curves.npz 选 station → 4×4 衰减曲线 FigureCanvas)
   [5] IP Inversion (share_τc / λ / N_Layers / 全线IP反演)
-  [6] TEM 2D / 3D Bridge (FMT24 / 2DINV / 3D tomo 一键桥接)
+  [6] WLF 2D / 3D Bridge (TRANS24 / SWP24D / 3D tomo 一键桥接)
 遵循:
   ★ 100% 离线（GUI 仅调本地 python/BAT/EXE，无网络）
   ★ 日志队列（后台线程 + after 200ms 轮询 + 磁盘落盘 gui_*.log）
@@ -60,15 +60,24 @@ from tfm_engine.preprocess_plus import run_full_preprocess_plus
 from tfm_engine.ip_inversion import run_all_ip_inversions, invert_one_station_ip
 from tfm_engine.signal_viz import (make_decay_4x4figure, batch_save_decay_pngs,
                                    plot_channel_overlay)
-from tfm_engine.wlf_bridge import (run_trans24_convert, run_2d_inv_tem,
-                                   run_3d_inv_tem)
+from tfm_engine.wlf_bridge import (run_trans24_convert, run_2d_inv_wlf,
+                                   run_3d_inv_wlf)
+# v6 新模块
+from tfm_engine.fem_forward import fem_forward_1d, fem_apparent_resistivity
+from tfm_engine.static_correction import correct_profile, plot_correction_comparison
+from tfm_engine.resolution import compute_resolution_from_inversion, plot_resolution
+from tfm_engine.nn_initial import NNInitialModel, create_warm_start_inversion
+from tfm_engine.denoise_ae import DenoisingAutoencoder
+from tfm_engine.viz_3d import (plot_2d_section_enhanced, plot_section_comparison,
+                               export_3d_volume_html, export_section_interactive)
+from tfm_engine.project_db import ProjectDB, create_project_db
 
 
 # =====================================================================
 # 主应用
 # =====================================================================
 class TFMMainApp:
-    WINDOW_TITLE = "TFM 时频电磁法完整处理系统 v2.0 (TEM算法集·全离线)"
+    WINDOW_TITLE = "TFM 时频电磁法完整处理系统 v2.0 (WLF算法集·全离线)"
     WINDOW_SIZE = "1280x820"
 
     def __init__(self, root: tk.Tk):
@@ -103,16 +112,22 @@ class TFMMainApp:
         self.tab_fwd   = ttk.Frame(self.nb);        self.nb.add(self.tab_fwd,   text=" ③ Forward Compare ")
         self.tab_sig   = ttk.Frame(self.nb);        self.nb.add(self.tab_sig,   text=" ④ Signal Viewer ")
         self.tab_ip    = ttk.Frame(self.nb);        self.nb.add(self.tab_ip,    text=" ⑤ IP Inversion ")
-        self.tab_tem   = ttk.Frame(self.nb);        self.nb.add(self.tab_tem,   text=" ⑥ TEM 2D/3D ")
+        self.tab_wlf   = ttk.Frame(self.nb);        self.nb.add(self.tab_wlf,   text=" ⑥ WLF 2D/3D ")
         self.tab_cur   = ttk.Frame(self.nb);        self.nb.add(self.tab_cur,   text=" ⑦ Tx Current ")
+        self.tab_adv   = ttk.Frame(self.nb);        self.nb.add(self.tab_adv,   text=" ⑧ Advanced ")
+        self.tab_ai    = ttk.Frame(self.nb);        self.nb.add(self.tab_ai,    text=" ⑨ AI & Viz ")
+        self.tab_proj  = ttk.Frame(self.nb);        self.nb.add(self.tab_proj,  text=" ⑩ Project DB ")
 
         self._build_tab_basic()
         self._build_tab_model()
         self._build_tab_forward()
         self._build_tab_signal()
         self._build_tab_ip()
-        self._build_tab_tem()
+        self._build_tab_wlf()
         self._build_tab_current()
+        self._build_tab_advanced()
+        self._build_tab_ai_viz()
+        self._build_tab_project()
 
         # ---------- 底部状态栏（路径 + 日志滚动） ----------
         status = ttk.LabelFrame(root, text="运行日志 (实时同步至磁盘 gui_*.log)")
@@ -334,7 +349,7 @@ class TFMMainApp:
                         npz = np.load(Path(out) / lt / f"{lt}_decay_curves.npz", allow_pickle=True)
                         data = npz['data'].item()
                         plot_channel_overlay(data, channel='Hx', attr='bandpass',
-                                             title=f'{lt} · Hx bandpass 关断窗口叠加 (TEM verify-kru)',
+                                             title=f'{lt} · Hx bandpass 关断窗口叠加 (WLF verify-kru)',
                                              out_png=Path(out)/lt/f'{lt}_Hx_verify_overlay.png')
                     except Exception as exc:
                         log(f"  [WARN] overlay {lt}: {exc}", level="W")
@@ -661,7 +676,7 @@ class TFMMainApp:
                    "o-", color="#2e75b5", linewidth=1.2, markersize=5, markerfacecolor="white")
         ax2.set_xlabel("t (μs)"); ax2.set_ylabel("|dBz/dt| predicted (V/m²)")
         ax2.set_title(f"V(t) 正演 — {st}"); ax2.grid(which="both", linestyle=":", linewidth=0.4)
-        self._fwd_fig.suptitle("Forward vs Observed  (TEM Mod1 正演对比)", fontsize=13, y=0.98)
+        self._fwd_fig.suptitle("Forward vs Observed  (WLF Mod1 正演对比)", fontsize=13, y=0.98)
         self._fwd_fig.tight_layout(); self._fwd_canvas.draw_idle()
 
     # =================================================================
@@ -769,7 +784,7 @@ class TFMMainApp:
         lf = ttk.LabelFrame(p, text="IP 反演参数 (Pelton Cole-Cole 4参数: ρ0/m/τ/c)")
         lf.pack(fill="x", padx=6, pady=6)
         self.var_ip_share = tk.BooleanVar(value=False)
-        self.var_ip_vtonly = tk.BooleanVar(value=True)  # vt_only_mode (TEM 标准IP做法) 默认开启, 已验证 RMSE_Vt 降66%
+        self.var_ip_vtonly = tk.BooleanVar(value=True)  # vt_only_mode (WLF pcvogoss_pc) 默认开启, 已验证 RMSE_Vt 降66%
         self.var_ip_lam = tk.StringVar(value="0.3")
         self.var_ip_nfev = tk.StringVar(value="100")
         self.var_ip_m0 = tk.StringVar(value="0.05")
@@ -791,9 +806,9 @@ class TFMMainApp:
             else:
                 ttk.Label(lf, text=t).grid(row=r, column=c, sticky="e", padx=6, pady=2)
                 ttk.Entry(lf, textvariable=v, width=12).grid(row=r, column=c+1, sticky="w", pady=2)
-        # ★ 新增: vt_only_mode 勾选框 (TEM 标准IP做法 工业做法) 单独一行醒目
+        # ★ 新增: vt_only_mode 勾选框 (WLF pcvogoss_pc 工业做法) 单独一行醒目
         ttk.Checkbutton(lf,
-            text="★ Vt-only 模式 (TEM 标准IP做法 工业做法, 直接拟合 decay NPZ 衰减曲线 — 推荐, 已验证 RMSE_Vt 降66%)",
+            text="★ Vt-only 模式 (WLF pcvogoss_pc 工业做法, 直接拟合 decay NPZ 衰减曲线 — 推荐, 已验证 RMSE_Vt 降66%)",
             variable=self.var_ip_vtonly).grid(row=3, column=0, columnspan=5, sticky="w", padx=8, pady=4)
         bf = ttk.Frame(p); bf.pack(fill="x", padx=6, pady=8)
         ttk.Button(bf, text="▶ 全线 IP 反演", style="Accent.TButton", width=22,
@@ -897,12 +912,12 @@ class TFMMainApp:
         self._ip_fig.tight_layout(); self._ip_canvas.draw_idle()
 
     # =================================================================
-    # TAB 6: TEM 2D/3D Bridge (FMT24 / 2DINV / 3D tomo)
+    # TAB 6: WLF 2D/3D Bridge (TRANS24 / SWP24D / 3D tomo)
     # =================================================================
-    def _build_tab_tem(self):
-        p = self.tab_tem
-        # 6.1 FMT24
-        lf = ttk.LabelFrame(p, text="① FMT24.exe — 格式互转 (.dat ↔ .cur ↔ .mod ↔ .grid3D)")
+    def _build_tab_wlf(self):
+        p = self.tab_wlf
+        # 6.1 TRANS24
+        lf = ttk.LabelFrame(p, text="① TRANS24.exe — 格式互转 (.dat ↔ .cur ↔ .mod ↔ .grid3D)")
         lf.pack(fill="x", padx=6, pady=4)
         ttk.Label(lf, text="Occam.dat:").grid(row=0, column=0, sticky="w", padx=4, pady=3)
         self.var_t_in = tk.StringVar()
@@ -912,13 +927,13 @@ class TFMMainApp:
                        filedialog.askopenfilename(filetypes=[("Occam dat", "*.dat")]))
                    ).grid(row=0, column=2, padx=3)
         ttk.Label(lf, text="输出格式:").grid(row=0, column=3, sticky="e", padx=4)
-        self.var_t_fmt = ttk.Combobox(lf, values=["tem_cur", "tem_mod", "occam"], width=10, state="readonly")
-        self.var_t_fmt.set("tem_cur"); self.var_t_fmt.grid(row=0, column=4, padx=3)
-        ttk.Button(lf, text="▶ 运行 FMT24", width=20,
+        self.var_t_fmt = ttk.Combobox(lf, values=["wlf_cur", "wlf_mod", "occam"], width=10, state="readonly")
+        self.var_t_fmt.set("wlf_cur"); self.var_t_fmt.grid(row=0, column=4, padx=3)
+        ttk.Button(lf, text="▶ 运行 TRANS24", width=20,
                    command=self._on_trans24).grid(row=0, column=5, padx=8, pady=3)
 
         # 6.2 SWP24 2D
-        lf2 = ttk.LabelFrame(p, text="② 2DINV.EXE — TEM 2D TEM Occam 反演 (按2D反演+NewLimModR_reg)")
+        lf2 = ttk.LabelFrame(p, text="② SWP24D.EXE — WLF 2D TEM Occam 反演 (按carmod2_kru+NewLimModR_reg)")
         lf2.pack(fill="x", padx=6, pady=4)
         ttk.Label(lf2, text="Occam.dat (线):").grid(row=0, column=0, sticky="w", padx=4, pady=3)
         self.var_2d_in = tk.StringVar()
@@ -933,11 +948,11 @@ class TFMMainApp:
         ttk.Label(lf2, text="★ LAMBDA_INIT:").grid(row=0, column=4, sticky="e", padx=4)
         self.var_2d_lam = tk.StringVar(value="1.0")
         ttk.Entry(lf2, textvariable=self.var_2d_lam, width=8).grid(row=0, column=5, padx=3)
-        ttk.Button(lf2, text="▶ 2D 反演 (2DINV)", style="Accent.TButton",
+        ttk.Button(lf2, text="▶ 2D 反演 (SWP24D)", style="Accent.TButton",
                    command=self._on_2d, width=22).grid(row=0, column=6, padx=8, pady=3)
 
         # 6.3 3D
-        lf3 = ttk.LabelFrame(p, text="③ TEM 3D 层析 (FMT24合并 + 各线2D→3D切片插值 · 3D层析)")
+        lf3 = ttk.LabelFrame(p, text="③ WLF 3D 层析 (TRANS24合并 + 各线2D→3D切片插值 · carmod3_kru)")
         lf3.pack(fill="x", padx=6, pady=4)
         ttk.Label(lf3, text="多选 Occam.dat (所有线):").grid(row=0, column=0, sticky="nw", padx=4, pady=3)
         self.txt_3d_dats = tk.Text(lf3, height=4, width=62, font=("Consolas", 10))
@@ -955,24 +970,24 @@ class TFMMainApp:
         # 6.4 输出面板 (桥接结果)
         lf4 = ttk.LabelFrame(p, text="桥接执行结果 / 错误 / BAT 输出")
         lf4.pack(fill="both", expand=True, padx=6, pady=4)
-        self.txt_tem = tk.Text(lf4, height=14, font=("Consolas", 10),
+        self.txt_wlf = tk.Text(lf4, height=14, font=("Consolas", 10),
                                bg="#252526", fg="#e0e0e0", wrap="word")
-        self.txt_tem.pack(fill="both", expand=True, padx=4, pady=4)
+        self.txt_wlf.pack(fill="both", expand=True, padx=4, pady=4)
 
     def _on_trans24(self):
         inp = self.var_t_in.get()
         if not Path(inp).exists():
             messagebox.showerror("错误", "请选 Occam.dat 文件"); return
         r = run_trans24_convert(inp, self.var_t_fmt.get(), log_fn=self.log)
-        self._write_tem_report("[FMT24] " + json.dumps(r, ensure_ascii=False, indent=2))
+        self._write_wlf_report("[TRANS24] " + json.dumps(r, ensure_ascii=False, indent=2))
 
     def _on_2d(self):
         inp = self.var_2d_in.get()
         if not Path(inp).exists():
             messagebox.showerror("错误", "请选 Occam.dat (线) 文件"); return
-        r = run_2d_inv_tem(inp, include_ip=self.var_2d_ip.get(),
+        r = run_2d_inv_wlf(inp, include_ip=self.var_2d_ip.get(),
                            lambda_init=float(self.var_2d_lam.get()), log_fn=self.log)
-        self._write_tem_report("[2D-2DINV] " + json.dumps(r, ensure_ascii=False, indent=2))
+        self._write_wlf_report("[2D-SWP24D] " + json.dumps(r, ensure_ascii=False, indent=2))
 
     def _3d_add_dats(self):
         fs = filedialog.askopenfilenames(filetypes=[("Occam dat", "*.dat")])
@@ -984,12 +999,12 @@ class TFMMainApp:
         outd = self.var_3d_out.get() or filedialog.askdirectory(title="3D输出目录")
         if not dats or not outd:
             messagebox.showwarning("警告", "请选多个 Occam.dat + 输出目录"); return
-        r = run_3d_inv_tem(dats, Path(outd), log_fn=self.log)
-        self._write_tem_report("[3D-TOMO] " + json.dumps(r, ensure_ascii=False, indent=2))
+        r = run_3d_inv_wlf(dats, Path(outd), log_fn=self.log)
+        self._write_wlf_report("[3D-TOMO] " + json.dumps(r, ensure_ascii=False, indent=2))
 
-    def _write_tem_report(self, text):
-        self.txt_tem.insert("end", "-" * 72 + "\n" + text + "\n\n")
-        self.txt_tem.see("end")
+    def _write_wlf_report(self, text):
+        self.txt_wlf.insert("end", "-" * 72 + "\n" + text + "\n\n")
+        self.txt_wlf.see("end")
         self.log(text.replace("\n", " | ")[:300])
 
     # =================================================================
@@ -997,7 +1012,7 @@ class TFMMainApp:
     # =================================================================
     def _build_tab_current(self):
         p = self.tab_cur
-        ttk.Label(p, text="发射电流档处理 (TXCAL01.DAT)\n提取: 平台幅值 | 关断时刻 | 纹波 | 与Excel I_tx 对照",
+        ttk.Label(p, text="发射电流档处理 (CXXST01.DAT)\n提取: 平台幅值 | 关断时刻 | 纹波 | 与Excel I_tx 对照",
                   font=("Microsoft YaHei", 11, "bold"), foreground="#0a5cad").pack(pady=8)
         f1 = ttk.Frame(p); f1.pack(fill="x", padx=6)
         ttk.Label(f1, text="项目根:").pack(side="left", padx=2)
@@ -1030,13 +1045,416 @@ class TFMMainApp:
         run_all_current(project, out, log_fn=log)
         log("✓ 电流处理完成")
 
+    # =================================================================
+    # TAB 8: Advanced Tools (FEM + 静态校正 + 分辨率矩阵)
+    # =================================================================
+    def _build_tab_advanced(self):
+        p = self.tab_adv
+        # ---- FEM 频率域正演 ----
+        lf_fem = ttk.LabelFrame(p, text="FEM 频率域正演")
+        lf_fem.pack(fill="x", padx=6, pady=4)
+        f = ttk.Frame(lf_fem); f.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f, text="层厚(m):").grid(row=0, column=0, sticky="w")
+        self.var_fem_thick = tk.StringVar(value="50,100,inf")
+        ttk.Entry(f, textvariable=self.var_fem_thick, width=20).grid(row=0, column=1, padx=2)
+        ttk.Label(f, text="电阻率:").grid(row=0, column=2, sticky="w")
+        self.var_fem_rho = tk.StringVar(value="100,500,100")
+        ttk.Entry(f, textvariable=self.var_fem_rho, width=20).grid(row=0, column=3, padx=2)
+        ttk.Label(f, text="频率(Hz):").grid(row=1, column=0, sticky="w")
+        self.var_fem_freq = tk.StringVar(value="1,10000,20")
+        ttk.Entry(f, textvariable=self.var_fem_freq, width=20).grid(row=1, column=1, padx=2)
+        ttk.Label(f, text="面积(m²):").grid(row=1, column=2, sticky="w")
+        self.var_fem_area = tk.StringVar(value="1e6")
+        ttk.Entry(f, textvariable=self.var_fem_area, width=10).grid(row=1, column=3, padx=2)
+        ttk.Button(f, text="▶ FEM 正演", command=self._on_fem_forward).grid(row=1, column=4, padx=4)
+
+        # ---- 静态效应校正 ----
+        lf_static = ttk.LabelFrame(p, text="静态效应/飞行点校正")
+        lf_static.pack(fill="x", padx=6, pady=4)
+        f2 = ttk.Frame(lf_static); f2.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f2, text="ρa断面文件:").pack(side="left")
+        self.var_static_file = tk.StringVar()
+        ttk.Entry(f2, textvariable=self.var_static_file, width=40).pack(side="left", padx=2)
+        ttk.Button(f2, text="…", width=3,
+                   command=lambda: self.var_static_file.set(
+                       filedialog.askopenfilename(filetypes=[("NPY", "*.npy")]))).pack(side="left")
+        ttk.Button(f2, text="▶ 校正", command=self._on_static_correct).pack(side="left", padx=4)
+
+        # ---- 分辨率矩阵 ----
+        lf_res = ttk.LabelFrame(p, text="深度分辨率矩阵")
+        lf_res.pack(fill="x", padx=6, pady=4)
+        f3 = ttk.Frame(lf_res); f3.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f3, text="反演结果(npy):").pack(side="left")
+        self.var_res_inv = tk.StringVar()
+        ttk.Entry(f3, textvariable=self.var_res_inv, width=35).pack(side="left", padx=2)
+        ttk.Button(f3, text="…", width=3,
+                   command=lambda: self.var_res_inv.set(
+                       filedialog.askopenfilename(filetypes=[("NPY", "*.npy")]))).pack(side="left")
+        ttk.Label(f3, text="观测数据:").pack(side="left")
+        self.var_res_obs = tk.StringVar()
+        ttk.Entry(f3, textvariable=self.var_res_obs, width=35).pack(side="left", padx=2)
+        ttk.Button(f3, text="…", width=3,
+                   command=lambda: self.var_res_obs.set(
+                       filedialog.askopenfilename(filetypes=[("NPY", "*.npy")]))).pack(side="left")
+        ttk.Button(f3, text="▶ 计算", command=self._on_compute_resolution).pack(side="left", padx=4)
+
+        self.txt_adv = tk.Text(p, height=8, wrap="word", font=("Consolas", 9), bg="#1e1e1e", fg="#c0c0c0")
+        self.txt_adv.pack(fill="both", expand=True, padx=6, pady=4)
+
+    def _on_fem_forward(self):
+        try:
+            thick = np.array([float(x) for x in self.var_fem_thick.get().split(",")])
+            rho = np.array([float(x) for x in self.var_fem_rho.get().split(",")])
+            parts = [float(x) for x in self.var_fem_freq.get().split(",")]
+            freq = np.geomspace(parts[0], parts[1], int(parts[2]) if len(parts) > 2 else 20)
+            area = float(self.var_fem_area.get())
+            model = LayeredModel(thick, rho)
+            self._start_worker(self._worker_fem, model, area, freq)
+        except Exception as exc:
+            messagebox.showerror("参数错误", str(exc))
+
+    def _worker_fem(self, model, area, freq):
+        log = lambda m: (self.log(m), self.txt_adv.insert("end", m + "\n"), self.txt_adv.see("end"))
+        f, hz_mag, hz_phase = fem_forward_1d(model, area, 30.0, freq, log_fn=log)
+        rhoa = fem_apparent_resistivity(hz_mag, freq, area, 30.0)
+        log(f"  FEM 完成: {len(f)} 频率点, ρa ∈ [{rhoa.min():.1f}, {rhoa.max():.1f}] Ω·m")
+        # 保存结果
+        out = Path(self.var_out.get()) / "fem_forward.npz"
+        np.savez(out, freq_hz=f, hz_mag=hz_mag, hz_phase=hz_phase, rhoa=rhoa)
+        log(f"  结果 → {out}")
+
+    def _on_static_correct(self):
+        fpath = self.var_static_file.get()
+        if not fpath or not Path(fpath).exists():
+            messagebox.showerror("错误", "请选择 ρa 断面文件"); return
+        self._start_worker(self._worker_static, fpath)
+
+    def _worker_static(self, fpath):
+        log = lambda m: (self.log(m), self.txt_adv.insert("end", m + "\n"), self.txt_adv.see("end"))
+        rhoa = np.load(fpath)
+        n_st = rhoa.shape[0]
+        station_x = np.arange(n_st) * 50.0
+        result = correct_profile(rhoa, station_x, log_fn=log)
+        out = Path(self.var_out.get()) / "static_corrected.npz"
+        np.savez(out, **result)
+        log(f"  校正完成 → {out}")
+        # 绘图
+        out_png = Path(self.var_out.get()) / "static_correction.png"
+        plot_correction_comparison(rhoa, result['rhoa_corrected'],
+                                   result['outlier_mask'], station_x, out_png=str(out_png))
+        log(f"  对比图 → {out_png}")
+
+    def _on_compute_resolution(self):
+        inv_file = self.var_res_inv.get()
+        obs_file = self.var_res_obs.get()
+        if not inv_file or not Path(inv_file).exists():
+            messagebox.showerror("错误", "请选择反演结果文件"); return
+        if not obs_file or not Path(obs_file).exists():
+            messagebox.showerror("错误", "请选择观测数据文件"); return
+        self._start_worker(self._worker_resolution, inv_file, obs_file)
+
+    def _worker_resolution(self, inv_file, obs_file):
+        log = lambda m: (self.log(m), self.txt_adv.insert("end", m + "\n"), self.txt_adv.see("end"))
+        theta = np.load(inv_file)
+        data = np.load(obs_file)
+        t_g, rhoa_obs, err_obs = data['t'], data['rhoa'], data['err']
+        z_c = np.geomspace(5.0, 1500.0, len(theta))
+        from .forward import forward_rhoa
+        res = compute_resolution_from_inversion(theta, t_g, rhoa_obs, err_obs, z_c,
+                                                forward_rhoa, log_fn=log)
+        out_png = Path(self.var_out.get()) / "resolution_matrix.png"
+        plot_resolution(res, z_c, out_png=str(out_png))
+        log(f"  分辨率矩阵 → {out_png}")
+
+    # =================================================================
+    # TAB 9: AI & Visualization (NN + AE + 3D Viz)
+    # =================================================================
+    def _build_tab_ai_viz(self):
+        p = self.tab_ai
+        # ---- NN 初始模型 ----
+        lf_nn = ttk.LabelFrame(p, text="神经网络初始模型预测")
+        lf_nn.pack(fill="x", padx=6, pady=4)
+        f = ttk.Frame(lf_nn); f.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f, text="训练样本数:").grid(row=0, column=0, sticky="w")
+        self.var_nn_samples = tk.StringVar(value="2000")
+        ttk.Entry(f, textvariable=self.var_nn_samples, width=10).grid(row=0, column=1, padx=2)
+        ttk.Label(f, text="Epochs:").grid(row=0, column=2, sticky="w")
+        self.var_nn_epochs = tk.StringVar(value="50")
+        ttk.Entry(f, textvariable=self.var_nn_epochs, width=8).grid(row=0, column=3, padx=2)
+        ttk.Button(f, text="▶ 训练", command=self._on_nn_train).grid(row=0, column=4, padx=4)
+        ttk.Button(f, text="▶ 预测", command=self._on_nn_predict).grid(row=0, column=5, padx=4)
+
+        # ---- 去噪自编码器 ----
+        lf_ae = ttk.LabelFrame(p, text="去噪自编码器")
+        lf_ae.pack(fill="x", padx=6, pady=4)
+        f2 = ttk.Frame(lf_ae); f2.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f2, text="样本数:").grid(row=0, column=0, sticky="w")
+        self.var_ae_samples = tk.StringVar(value="2000")
+        ttk.Entry(f2, textvariable=self.var_ae_samples, width=10).grid(row=0, column=1, padx=2)
+        ttk.Label(f2, text="噪声水平:").grid(row=0, column=2, sticky="w")
+        self.var_ae_noise = tk.StringVar(value="0.1")
+        ttk.Entry(f2, textvariable=self.var_ae_noise, width=8).grid(row=0, column=3, padx=2)
+        ttk.Button(f2, text="▶ 训练", command=self._on_ae_train).grid(row=0, column=4, padx=4)
+        ttk.Button(f2, text="▶ 去噪", command=self._on_ae_denoise).grid(row=0, column=5, padx=4)
+
+        # ---- 3D 可视化 ----
+        lf_3d = ttk.LabelFrame(p, text="三维体可视化")
+        lf_3d.pack(fill="x", padx=6, pady=4)
+        f3 = ttk.Frame(lf_3d); f3.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f3, text="断面数据:").pack(side="left")
+        self.var_3d_file = tk.StringVar()
+        ttk.Entry(f3, textvariable=self.var_3d_file, width=40).pack(side="left", padx=2)
+        ttk.Button(f3, text="…", width=3,
+                   command=lambda: self.var_3d_file.set(
+                       filedialog.askopenfilename(filetypes=[("NPY", "*.npy")]))).pack(side="left")
+        ttk.Button(f3, text="▶ 生成 3D HTML", command=self._on_3d_viz).pack(side="left", padx=4)
+        ttk.Button(f3, text="▶ 交互式断面", command=self._on_interactive_section).pack(side="left", padx=4)
+
+        self.txt_ai = tk.Text(p, height=8, wrap="word", font=("Consolas", 9), bg="#1e1e1e", fg="#c0c0c0")
+        self.txt_ai.pack(fill="both", expand=True, padx=6, pady=4)
+
+        # 模型缓存
+        self._nn_model = None
+        self._ae_model = None
+
+    def _on_nn_train(self):
+        n = int(self.var_nn_samples.get())
+        epochs = int(self.var_nn_epochs.get())
+        self._start_worker(self._worker_nn_train, n, epochs)
+
+    def _worker_nn_train(self, n_samples, n_epochs):
+        log = lambda m: (self.log(m), self.txt_ai.insert("end", m + "\n"), self.txt_ai.see("end"))
+        nn = NNInitialModel(n_gates=25, n_layers=25)
+        log(f"  [NN] 生成 {n_samples} 样本...")
+        history = nn.train_from_synthetic(n_samples=n_samples, n_epochs=n_epochs, log_fn=log)
+        self._nn_model = nn
+        save_path = Path(self.var_out.get()) / "nn_initial_model.npz"
+        nn.save(save_path)
+        log(f"  [NN] 训练完成, 模型 → {save_path}")
+
+    def _on_nn_predict(self):
+        if self._nn_model is None:
+            # 尝试加载
+            save_path = Path(self.var_out.get()) / "nn_initial_model.npz"
+            if save_path.exists():
+                self._nn_model = NNInitialModel(25, 25)
+                self._nn_model.load(save_path)
+            else:
+                messagebox.showerror("错误", "请先训练或加载模型"); return
+        self._start_worker(self._worker_nn_predict)
+
+    def _worker_nn_predict(self):
+        log = lambda m: (self.log(m), self.txt_ai.insert("end", m + "\n"), self.txt_ai.see("end"))
+        # 从预处理结果加载 ρa 曲线
+        out_dir = Path(self.var_out.get())
+        rhoa_files = list(out_dir.glob("*_rhoa.npy"))
+        if not rhoa_files:
+            log("  [NN] 未找到 ρa 文件"); return
+        rhoa = np.load(rhoa_files[0])
+        rho_init = self._nn_model.predict_initial(rhoa)
+        log(f"  [NN] 初始模型预测: ρ ∈ [{rho_init.min():.1f}, {rho_init.max():.1f}] Ω·m")
+        out = out_dir / "nn_initial_model_pred.npy"
+        np.save(out, rho_init)
+        log(f"  [NN] 预测结果 → {out}")
+
+    def _on_ae_train(self):
+        n = int(self.var_ae_samples.get())
+        noise = float(self.var_ae_noise.get())
+        self._start_worker(self._worker_ae_train, n, noise)
+
+    def _worker_ae_train(self, n_samples, noise_level):
+        log = lambda m: (self.log(m), self.txt_ai.insert("end", m + "\n"), self.txt_ai.see("end"))
+        ae = DenoisingAutoencoder(n_gates=25, n_latent=8)
+        log(f"  [AE] 生成 {n_samples} 干净样本...")
+        history = ae.train_from_synthetic(n_samples=n_samples, noise_level=noise_level, log_fn=log)
+        self._ae_model = ae
+        save_path = Path(self.var_out.get()) / "denoise_ae_model.npz"
+        ae.save(save_path)
+        log(f"  [AE] 训练完成, 模型 → {save_path}")
+
+    def _on_ae_denoise(self):
+        if self._ae_model is None:
+            save_path = Path(self.var_out.get()) / "denoise_ae_model.npz"
+            if save_path.exists():
+                self._ae_model = DenoisingAutoencoder(25)
+                self._ae_model.load(save_path)
+            else:
+                messagebox.showerror("错误", "请先训练或加载模型"); return
+        self._start_worker(self._worker_ae_denoise)
+
+    def _worker_ae_denoise(self):
+        log = lambda m: (self.log(m), self.txt_ai.insert("end", m + "\n"), self.txt_ai.see("end"))
+        out_dir = Path(self.var_out.get())
+        decay_files = list(out_dir.glob("*_decay_curves.npz"))
+        if not decay_files:
+            log("  [AE] 未找到衰减曲线文件"); return
+        data = np.load(decay_files[0])
+        # 假设数据中有 'vt' 或 'dbzdt' 键
+        key = 'vt' if 'vt' in data else 'dbzdt'
+        noisy = data[key]
+        clean = self._ae_model.denoise(noisy)
+        out = out_dir / "denoised_curves.npz"
+        np.savez(out, original=noisy, denoised=clean)
+        log(f"  [AE] 去噪完成 → {out}")
+
+    def _on_3d_viz(self):
+        fpath = self.var_3d_file.get()
+        if not fpath or not Path(fpath).exists():
+            messagebox.showerror("错误", "请选择断面数据文件"); return
+        self._start_worker(self._worker_3d_viz, fpath)
+
+    def _worker_3d_viz(self, fpath):
+        log = lambda m: (self.log(m), self.txt_ai.insert("end", m + "\n"), self.txt_ai.see("end"))
+        data = np.load(fpath)
+        # 假设数据是 (n_stations, n_gates)
+        if data.ndim == 2:
+            n_st, n_g = data.shape
+            x = np.arange(n_st) * 50.0
+            y = np.geomspace(5.0, 1500.0, n_g)
+            z = np.array([0.0])
+            vol = data[:, :, None]  # (n_st, n_g, 1)
+            out_html = Path(self.var_out.get()) / "volume_3d.html"
+            export_3d_volume_html(x, y, z, vol, str(out_html), log_fn=log)
+        else:
+            log("  [3D] 数据维度不支持")
+
+    def _on_interactive_section(self):
+        fpath = self.var_3d_file.get()
+        if not fpath or not Path(fpath).exists():
+            messagebox.showerror("错误", "请选择断面数据文件"); return
+        self._start_worker(self._worker_interactive, fpath)
+
+    def _worker_interactive(self, fpath):
+        log = lambda m: (self.log(m), self.txt_ai.insert("end", m + "\n"), self.txt_ai.see("end"))
+        data = np.load(fpath)
+        n_st, n_g = data.shape
+        x = np.arange(n_st) * 50.0
+        y = np.geomspace(2e-6, 20e-3, n_g)
+        out_html = Path(self.var_out.get()) / "interactive_section.html"
+        export_section_interactive(x, y, data, str(out_html), log_fn=log)
+
+    # =================================================================
+    # TAB 10: Project Database (SQLite)
+    # =================================================================
+    def _build_tab_project(self):
+        p = self.tab_proj
+        # ---- 项目库操作 ----
+        lf_db = ttk.LabelFrame(p, text="SQLite 项目库")
+        lf_db.pack(fill="x", padx=6, pady=4)
+        f = ttk.Frame(lf_db); f.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f, text="数据库:").grid(row=0, column=0, sticky="w")
+        self.var_db_path = tk.StringVar(value=str(Path(self.var_out.get()) / "project.db"))
+        ttk.Entry(f, textvariable=self.var_db_path, width=50).grid(row=0, column=1, padx=2)
+        ttk.Button(f, text="…", width=3,
+                   command=lambda: self.var_db_path.set(
+                       filedialog.asksaveasfilename(defaultextension=".db",
+                                                    filetypes=[("SQLite", "*.db")]))).grid(row=0, column=2)
+        ttk.Label(f, text="项目名:").grid(row=1, column=0, sticky="w")
+        self.var_db_name = tk.StringVar(value="TFM_Project")
+        ttk.Entry(f, textvariable=self.var_db_name, width=30).grid(row=1, column=1, padx=2)
+        ttk.Button(f, text="▶ 创建/打开", command=self._on_db_open).grid(row=1, column=2, padx=4)
+        ttk.Button(f, text="▶ 导入 Excel", command=self._on_db_import).grid(row=1, column=3, padx=4)
+        ttk.Button(f, text="▶ 生成报告", command=self._on_db_report).grid(row=1, column=4, padx=4)
+
+        # ---- 查询 ----
+        lf_query = ttk.LabelFrame(p, text="数据查询")
+        lf_query.pack(fill="x", padx=6, pady=4)
+        f2 = ttk.Frame(lf_query); f2.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f2, text="测线号:").pack(side="left")
+        self.var_query_line = tk.StringVar()
+        ttk.Entry(f2, textvariable=self.var_query_line, width=8).pack(side="left", padx=2)
+        ttk.Button(f2, text="查询测站", command=self._on_db_query).pack(side="left", padx=4)
+        ttk.Button(f2, text="查询反演", command=self._on_db_query_inv).pack(side="left", padx=4)
+
+        self.txt_proj = tk.Text(p, height=10, wrap="word", font=("Consolas", 9), bg="#1e1e1e", fg="#c0c0c0")
+        self.txt_proj.pack(fill="both", expand=True, padx=6, pady=4)
+
+        self._db: Optional[ProjectDB] = None
+
+    def _on_db_open(self):
+        db_path = self.var_db_path.get()
+        name = self.var_db_name.get()
+        try:
+            self._db = ProjectDB(db_path)
+            # 尝试创建项目（若已存在则忽略错误）
+            try:
+                self._db.create_project(name)
+                self.log(f"[DB] 创建项目: {name}")
+            except Exception:
+                self.log(f"[DB] 打开项目: {name}")
+            self.txt_proj.insert("end", f"数据库已连接: {db_path}\n")
+            self.txt_proj.see("end")
+        except Exception as exc:
+            messagebox.showerror("错误", str(exc))
+
+    def _on_db_import(self):
+        if self._db is None:
+            messagebox.showerror("错误", "请先创建/打开数据库"); return
+        excel = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx;*.xls")])
+        if not excel:
+            return
+        self._start_worker(self._worker_db_import, excel)
+
+    def _worker_db_import(self, excel_path):
+        log = lambda m: (self.log(m), self.txt_proj.insert("end", m + "\n"), self.txt_proj.see("end"))
+        project = self._db.get_project(self.var_db_name.get())
+        if not project:
+            log("  [DB] 项目不存在"); return
+        stats = import_from_excel(self._db, project['id'], excel_path, log_fn=log)
+        log(f"  [DB] 导入完成: {stats}")
+
+    def _on_db_report(self):
+        if self._db is None:
+            messagebox.showerror("错误", "请先创建/打开数据库"); return
+        project = self._db.get_project(self.var_db_name.get())
+        if not project:
+            return
+        out_html = Path(self.var_out.get()) / "project_report.html"
+        self._db.export_summary_html(project['id'], str(out_html))
+        self.log(f"[DB] 报告 → {out_html}")
+        self.txt_proj.insert("end", f"报告 → {out_html}\n")
+        self.txt_proj.see("end")
+
+    def _on_db_query(self):
+        if self._db is None:
+            messagebox.showerror("错误", "请先创建/打开数据库"); return
+        line_num = self.var_query_line.get()
+        if not line_num:
+            return
+        project = self._db.get_project(self.var_db_name.get())
+        if not project:
+            return
+        line = self._db.get_line(project['id'], int(line_num))
+        if not line:
+            self.txt_proj.insert("end", f"测线 {line_num} 不存在\n")
+            return
+        stations = self._db.list_stations(line['id'])
+        self.txt_proj.insert("end", f"测线 {line_num}: {len(stations)} 站\n")
+        for st in stations[:10]:
+            self.txt_proj.insert("end", f"  {st['station_number']}: {st['code']} ({st['x']:.1f}, {st['y']:.1f})\n")
+        if len(stations) > 10:
+            self.txt_proj.insert("end", f"  ... 共 {len(stations)} 站\n")
+        self.txt_proj.see("end")
+
+    def _on_db_query_inv(self):
+        if self._db is None:
+            messagebox.showerror("错误", "请先创建/打开数据库"); return
+        project = self._db.get_project(self.var_db_name.get())
+        if not project:
+            return
+        invs = self._db.list_inversions(project['id'])
+        self.txt_proj.insert("end", f"反演记录: {len(invs)} 条\n")
+        for inv in invs[:5]:
+            self.txt_proj.insert("end", f"  {inv['algorithm']}: RMSE={inv['rmse_mean']:.3f} @ {inv['created_at']}\n")
+        self.txt_proj.see("end")
+
 
 def main():
     root = tk.Tk()
     # 缺失的 simpledialog 导入
     import tkinter.simpledialog  # noqa: F401 (used in mdl_edit_cell)
     app = TFMMainApp(root)
-    app.log("TFM GUI v2.0 启动 · TEM 全套算法集 · 100% OFFLINE 纯本地")
+    app.log("TFM GUI v2.0 启动 · WLF 全套算法集 · 100% OFFLINE 纯本地")
     app.log(f"  Python: {sys.executable}")
     app.log(f"  Tools : {_HERE}")
     root.mainloop()
