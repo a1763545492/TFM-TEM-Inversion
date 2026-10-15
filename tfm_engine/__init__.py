@@ -20,7 +20,7 @@ tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0
   - inversion.py     : 1D least_squares 电阻率反演 → R[station, layer] + 断面 PNG
   - occam_bridge.py  : Occam1D cfg/model-p 生成 + 命令行桥接 (含 dry-run)
   [v2 新增 5]
-  - forward.py           : 1D TEM 正演 (Guptasarma 61点汉克尔 + Anderson 频→时 + Cole-Cole IP)
+  - forward.py           : 1D TEM 正演 (扩散深度近似 + 真频域: 复电阻率层状递推 + Guptasarma J1 + Key2012 DLF, Cole-Cole IP)
   - preprocess_plus.py   : WLF 体系增强预处理 (AATZero 关断精修 + 陷波 + 带通 + MAD 野值 + 衰减曲线提取)
   - ip_inversion.py      : 1D 极化率(IP)反演 (Pelton Cole-Cole 4参数, share_τ/c 稳健模式)
   - signal_viz.py        : WLF curview/verify 风格信号可视化 (4×4 衰减曲线子图 + 多站 Hx 叠加)
@@ -36,7 +36,7 @@ tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0
 **统一日志接口**：所有模块接受 log_fn(str) 回调。
 ================================================================================
 """
-__version__ = "2.3.0"
+__version__ = "2.4.0"
 
 # v1 核心模块
 from . import dat_parser
@@ -47,7 +47,7 @@ from . import inversion
 from . import occam_bridge
 
 # v2 扩展模块 (M1-M5, M7)
-from . import forward           # 1D 正演 (LayeredModel / tem_forward_1d)
+from . import forward           # 1D 正演 (tem_forward_1d 扩散深度 / tem_forward_1d_freq 真频域)
 from . import preprocess_plus   # 增强预处理 + 衰减曲线 (AATZero/notch/bandpass)
 from . import ip_inversion      # 1D IP 极化率反演 (Cole-Cole 4 参数)
 from . import signal_viz        # 4×4 信号子图 + verify_kru 叠加

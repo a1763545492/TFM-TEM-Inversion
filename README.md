@@ -17,7 +17,7 @@ IP 极化率反演 → Occam1D / WLF EXE 桥接的完整流程。
 | 发射电流处理 | 大写校准档 CXXST01 波形分析：平台幅值、关断时刻 t_off、双极性纹波、桩间一致性 QC |
 | 预处理 | Inventory → DAT 加载 → Cube 对齐（权威测站编码）→ ADC 换算 → 去 DC → 25 时间门 → ρa（中心回线公式）→ QC → Occam.dat |
 | 增强预处理 | AATZero 关断精修、陷波、带通、MAD 野值剔除、衰减曲线提取（preprocess_plus） |
-| 层状模型正演 | 1D TEM 正演：Guptasarma 61 点汉克尔变换 + Anderson 频→时转换，支持 Cole-Cole IP |
+| 层状模型正演 | 1D TEM 正演双引擎：Boerner 扩散深度近似（默认，与 WLF Vt 量纲自洽）+ 真频域严格正演（复电阻率层状递推 + Guptasarma J₁ 汉克尔 + Key2012 正弦 DLF），支持 Cole-Cole IP |
 | 1D 反演（多算法） | TRF（信赖域，默认）/ LM / 纯 Python Occam（光滑反演），支持三算法对比 |
 | 1D 反演（高级算法） | 自适应 Occam（λ 自动寻优 + L 曲线诊断图）/ Nielsen 自适应阻尼 LM / CGLS 共轭梯度 / MCMC 后验不确定性量化 |
 | 拟 2D 反演 | LCI 横向约束联合反演（Auken & Christiansen）：相邻测站模型加横向平滑，产出连续拟 2D 断面 |
@@ -131,8 +131,16 @@ TRF/LM 拟合略优且带边界约束更稳健；Occam 光滑模型作交叉验�
 
 ## 算法说明
 
-- **正演**：Boerner 风格扩散深度近似 δ(t)=√(2ρ_ref·t/μ₀)/2，将层状模型 log₁₀ρ 插值映射为 ρa(t)；
-  forward.py 另提供 Guptasarma 61 点汉克尔 + Anderson 频→时严格正演（含 Cole-Cole IP 响应）
+- **正演（扩散深度近似，默认）**：Boerner 风格 δ(t)=√(2ρ_ref·t/μ₀)/2，将层状模型 log₁₀ρ 插值映射为 ρa(t)；
+  与 WLF Vt 量纲体系三向自洽（预处理 Nabighian ρa ↔ 正演 ↔ 反演）
+- **正演（真频域严格解）**：`tem_forward_1d_freq` —— 频率域复电阻率层状递推（空气层置顶，IP 走
+  Pelton Cole-Cole 复电阻率路径）+ Guptasarma 47 点 J₁ 汉克尔 DLF（中心回线核）+ Key 2012 201 点
+  正弦 DLF 频→时转换，输出真 SI dBz/dt [T/s]，晚期与 Ward & Hohmann t^-2.5 渐近精确一致
+  （100 Ω·m 半空间晚期 ρa 恢复 ±5%）；再现扩散深度近似缺失的"良导中间层 S 控制"物理
+  （三层 100/20/500 模型 5~20ms 低谷与超晚期向基底爬升）。配套 `apparent_resistivity_dbzdt_freq`
+  （W&H 晚期渐近严格反解）与 `tem_forward_1d_freq_vt`（WLF Vt 量纲封装，反演/GUI 可直接替换）。
+  IP 限制：晚期 dBz/dt 为 ~11 个量级的宽频相消残差，Cole-Cole 色散扰动会破坏 DLF 相消平衡产生
+  伪影，故 t>2τ_eff 平滑回归无 IP 基线（blend 过渡），IP 反演灵敏区 t~τ 附近完整保留
 - **TRF**：scipy least_squares（信赖域 + 边界 [0.1, 1e8] Ω·m），残差 = 加权对数数据残差 + √λ·层间平滑
 - **LM**：Levenberg-Marquardt 经典阻尼最小二乘（软裁剪无界）
 - **Occam（纯 Python）**：Constable 1987 光滑反演，外环迭代线性化 + λ 搜索使 χ²/N→1

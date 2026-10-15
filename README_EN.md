@@ -19,7 +19,7 @@ inversion (multiple algorithms) → IP chargeability inversion → Occam1D / WLF
 | Tx current processing | Waveform analysis of uppercase calibration files CXXST01: plateau amplitude, turn-off time t_off, bipolar ripple, inter-picket consistency QC |
 | Preprocessing | Inventory → DAT loading → cube alignment (authoritative station codes) → ADC conversion → DC removal → 25 time gates → ρa (central-loop formula) → QC → Occam.dat |
 | Enhanced preprocessing | AATZero turn-off refinement, notch, band-pass, MAD outlier rejection, decay-curve extraction (preprocess_plus) |
-| Layered-model forward | 1D TEM forward: Guptasarma 61-point Hankel transform + Anderson frequency→time conversion, with Cole-Cole IP support |
+| Layered-model forward | Dual-engine 1D TEM forward: Boerner diffusion-depth approximation (default, dimension-consistent with WLF Vt) + rigorous true-frequency-domain solution (complex-resistivity layered recursion + Guptasarma J₁ Hankel DLF + Key2012 sine DLF), with Cole-Cole IP support |
 | 1D inversion (multi-algo) | TRF (trust-region, default) / LM (Levenberg-Marquardt) / pure-Python Occam (smooth inversion), with three-algorithm comparison |
 | IP chargeability inversion | Pelton Cole-Cole 4-parameter model (ρ, m, τ, c), robust shared-τ/c mode |
 | Signal visualization | WLF curview/verify style: 4×4 decay-curve subplots, multi-station Hx overlay |
@@ -140,9 +140,19 @@ To reduce overall RMSE, follow the tuning discipline: adjust `RHOA_SCALE_CAL` fi
 
 ## Algorithms
 
-- **Forward**: Boerner-style diffusion-depth approximation δ(t)=√(2ρ_ref·t/μ₀)/2 mapping layered
-  log₁₀ρ onto ρa(t); forward.py additionally provides a rigorous Guptasarma 61-point Hankel +
-  Anderson frequency→time forward (with Cole-Cole IP response)
+- **Forward (diffusion-depth approx., default)**: Boerner-style δ(t)=√(2ρ_ref·t/μ₀)/2 mapping layered
+  log₁₀ρ onto ρa(t); three-way dimension-consistent with WLF Vt (preprocess Nabighian ρa ↔ forward ↔ inversion)
+- **Forward (true frequency domain)**: `tem_forward_1d_freq` — frequency-domain complex-resistivity
+  layered recursion (air layer on top; IP via the Pelton Cole-Cole complex-resistivity path) +
+  Guptasarma 47-point J₁ Hankel DLF (central-loop kernel) + Key 2012 201-point sine DLF
+  frequency→time conversion. Outputs true SI dBz/dt [T/s]; late time matches the Ward & Hohmann
+  t^-2.5 asymptote exactly (100 Ω·m half-space late-time ρa recovers within ±5%); reproduces the
+  "conductive-interlayer S control" physics missing from the diffusion-depth approximation.
+  Companion functions: `apparent_resistivity_dbzdt_freq` (rigorous W&H late-time inversion) and
+  `tem_forward_1d_freq_vt` (WLF Vt dimension wrapper, drop-in replacement for inversion/GUI).
+  IP limitation: late-time dBz/dt is an ~11-decade broadband cancellation residual; Cole-Cole
+  dispersion perturbs the DLF cancellation balance and creates artifacts, so t > 2τ_eff blends
+  smoothly back to the no-IP baseline; the IP-sensitive window t ~ τ is fully preserved
 - **TRF**: scipy least_squares (trust-region with bounds [0.1, 1e8] Ω·m); residual = weighted
   log-data residual + √λ·inter-layer smoothness
 - **LM**: classic Levenberg-Marquardt damped least squares (unbounded, soft-clipped)
