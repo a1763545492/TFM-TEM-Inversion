@@ -4,7 +4,7 @@ preprocess.py — 四阶段预处理流水线 (完整重新实现, 权威 Excel 
 ======================================================================
 阶段 1 Inventory  : project_root → 每条测线 Excel 解析 + section 目录枚举 + DAT 文件绑定
 阶段 2 Load       : 按 Excel 映射链逐 DAT 读取 (auto_truncate_if_mismatch)
-阶段 3 Cube Align : 关键! 对 每 section(=大写档 CXXST01) 下 3 台仪器 × 每仪器 Np=5 →
+阶段 3 Cube Align : 关键! 对 每 section(=大写档 TXCAL01) 下 3 台仪器 × 每仪器 Np=5 →
                     映射到 Excel「接收对应点位」的 station 集合, 合并成 16 条 station_cube.
                     合并策略: 同一 station 多仪器/多通道 → 按通道加权平均 (Hx优先).
 阶段 4 ADC + ρa + QC + Export:
@@ -31,7 +31,7 @@ rcParams['font.sans-serif'] = ['Microsoft YaHei','SimHei','Arial']
 rcParams['axes.unicode_minus'] = False
 
 # 本地模块
-from .dat_parser import load_wlf_dat, PER_CHANNEL, auto_truncate_if_mismatch, WlfDatData, WlfDatHeader
+from .dat_parser import load_tem_dat, PER_CHANNEL, auto_truncate_if_mismatch, WlfDatData, WlfDatHeader
 from .excel_meta import parse_em_xlsx, LINE_NAME_TO_CODE, LINE_CODE_TO_NAME
 from .coord_loader import load_authoritative_coordinates
 
@@ -79,7 +79,7 @@ def run_inventory(project_root: Path, log_fn: Callable[[str], None]) -> dict:
     """project_root = myfile/.  扫描 4 个 X线 子目录, 读 Excel + 列举 section 子目录.
     返回结构:
       {'line_tag' → {'meta': <parse_em_xlsx>, 'sections_disk': {section_key → {instrument → Path(dat_on_disk),
-                                                                               tx_dat → Path(CXXST01)}}}}
+                                                                               tx_dat → Path(TXCAL01)}}}}
     """
     lines_dirs = [p for p in project_root.iterdir() if p.is_dir()
                   and re.fullmatch(r'[1-5]线', p.name)]
@@ -100,7 +100,7 @@ def run_inventory(project_root: Path, log_fn: Callable[[str], None]) -> dict:
             for f in sd.iterdir():
                 if not f.suffix.lower() == '.dat': continue
                 name = f.name
-                if name.upper() == name:          # 全大写 = 发射电流档 (CXXST01)
+                if name.upper() == name:          # 全大写 = 发射电流档 (TXCAL01)
                     tx_dat = f
                 else:                              # 全小写 = 接收档
                     m = re.match(r'^c(\d{3})st(\d{3})\.dat', name.lower())
@@ -189,7 +189,7 @@ def process_one_line(line_tag: str, inv: dict, cfg: dict, out_dir: Path,
         for inst in ('001', '002', '003'):
             if inst not in recv_dats: continue
             try:
-                wd = load_wlf_dat(recv_dats[inst], log_fn=log_fn, validate=True, strict_per_ch=False)
+                wd = load_tem_dat(recv_dats[inst], log_fn=log_fn, validate=True, strict_per_ch=False)
             except Exception as e:
                 log_fn(f'  [WARN] 读取 {sec}/{inst} 失败: {e}')
                 continue
@@ -211,7 +211,7 @@ def process_one_line(line_tag: str, inv: dict, cfg: dict, out_dir: Path,
     # 25 gates: cutoff_idx → PER_CH-1, geomspace (对数等比)
     idx_gates = np.geomspace(cutoff_idx, PER_CH - 1, num=cfg['TEM_N_GATES'], endpoint=True).astype(np.int64)
     idx_gates = np.unique(idx_gates)
-    # 时间轴: 映射到 t∈[2μs, 20ms] 对数 (实际 WLF 时钟未标定, 用相对 gates)
+    # 时间轴: 映射到 t∈[2μs, 20ms] 对数 (实际 TEM 时钟未标定, 用相对 gates)
     t_us = np.geomspace(cfg['T_MIN_US'], cfg['T_MAX_US'], num=len(idx_gates))
     t_s = t_us * 1e-6
 

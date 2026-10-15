@@ -2,7 +2,7 @@
 """
 make_demo_data.py — TFM-TEM-Inversion 合成示例数据生成器
 ==========================================================
-在仓库根目录下生成一套完整的 WLF 体系演示工程::
+在仓库根目录下生成一套完整的 TEM 体系演示工程::
 
     demo_data/myfile_demo/
       坐标文件.xls                      (xlsx 内容, 2 sheet: MN坐标 / 源坐标)
@@ -15,7 +15,7 @@ DAT 二进制契约 (与 tfm_engine/dat_parser.py 100% 一致):
   文件大小 = 2048 + 4 × 544859 × Np × 4 字节  (Header + int32 LE 数据区)
   Header 前 64 字节 = 32 个 int16 LE:
     [11..14]=8224  [15]=1024  [26]=0x0102(258)  [29]=1  [27]=256+Np
-    [4:15] = ASCII 签名 (大写电流档含 "Xi'An,China"; 小写接收档含 "area")
+    [4:15] = ASCII 签名 (大写电流档含 "SurveyRegion"; 小写接收档含 "area")
   数据区 int32 LE, reshape(4, 544859, Np), order='C', 通道 0=Ex 1=Ey 2=Hx 3=Hy
 
 说明: Np=3 (契约允许 1..10), 使 2 section × 3 仪器 × 3 桩 = 18 槽位
@@ -93,7 +93,7 @@ def _write_dat(path: Path, cube: np.ndarray, sig: str) -> None:
 
 # ---------------------------------------------------------------- 波形合成
 def _tx_cube(rng: np.random.Generator) -> np.ndarray:
-    """发射电流档 (大写 CXXST01.DAT):
+    """发射电流档 (大写 TXCAL01.DAT):
     Ex=双极性方波 ±1.9e6 counts (T=0.25ms, 占空~95%), t≈19.99ms 关断归零;
     Hx=常值平台 3.9e6; Ey/Hy=小幅噪声. 5% 高斯噪声."""
     t = np.arange(N) / FS
@@ -144,10 +144,10 @@ def write_dats() -> None:
     for sec, sdir in SECTION_DIRS.items():
         sec_dir = LINE_DIR / sdir
         print(f"  [section {sec}] -> 1线/{sdir}/")
-        _write_dat(sec_dir / f"C{sec}ST01.DAT", _tx_cube(rng), "Xi'An,China WLF TX")
+        _write_dat(sec_dir / f"C{sec}ST01.DAT", _tx_cube(rng), "SurveyRegion TEM TX")
         for k, inst in enumerate(("001", "002", "003")):
             _write_dat(sec_dir / f"c{sec}st{inst}.dat",
-                       _rx_cube(rng, seed_off=float(k)), "area recv WLF")
+                       _rx_cube(rng, seed_off=float(k)), "area recv TEM")
 
 
 # ---------------------------------------------------------------- Excel 元数据
@@ -240,12 +240,12 @@ def self_check() -> None:
         import sys
         if str(REPO_ROOT) not in sys.path:
             sys.path.insert(0, str(REPO_ROOT))
-        from tfm_engine.dat_parser import load_wlf_dat
+        from tfm_engine.dat_parser import load_tem_dat
     except Exception as e:
         print(f"  [self-check] 跳过 (无法导入 tfm_engine): {e}")
         return
     for fp in (LINE_DIR / "17" / "C017ST01.DAT", LINE_DIR / "17" / "c017st001.dat"):
-        d = load_wlf_dat(fp)
+        d = load_tem_dat(fp)
         print(f"  [self-check] {fp.name}: Np={d.n_pickets} sig='{d.header.ascii_sig}' "
               f"cube={d.cube.shape} Hx_peak={abs(d.cube[2]).max():.3e}")
 

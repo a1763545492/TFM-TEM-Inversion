@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-tfm_gui.py (M6 Final Upgrade: WLF-Full-Feature)
+tfm_gui.py (M6 Final Upgrade: TEM-Full-Feature)
 =================================================
 ttk.Notebook 6 Tabs 完整集成：
   [1] Basic Pipeline (原 GUI: 路径/Steps/HP 3★/开始处理)
@@ -8,7 +8,7 @@ ttk.Notebook 6 Tabs 完整集成：
   [3] Forward Compare (选模型.dat + 选 Occam station → 正演叠加对比)
   [4] Signal Viewer (从 decay_curves.npz 选 station → 4×4 衰减曲线 FigureCanvas)
   [5] IP Inversion (share_τc / λ / N_Layers / 全线IP反演)
-  [6] WLF 2D / 3D Bridge (TRANS24 / SWP24D / 3D tomo 一键桥接)
+  [6] TEM 2D / 3D Bridge (FMT24 / 2DINV / 3D tomo 一键桥接)
 遵循:
   ★ 100% 离线（GUI 仅调本地 python/BAT/EXE，无网络）
   ★ 日志队列（后台线程 + after 200ms 轮询 + 磁盘落盘 gui_*.log）
@@ -60,15 +60,15 @@ from tfm_engine.preprocess_plus import run_full_preprocess_plus
 from tfm_engine.ip_inversion import run_all_ip_inversions, invert_one_station_ip
 from tfm_engine.signal_viz import (make_decay_4x4figure, batch_save_decay_pngs,
                                    plot_channel_overlay)
-from tfm_engine.wlf_bridge import (run_trans24_convert, run_2d_inv_wlf,
-                                   run_3d_inv_wlf)
+from tfm_engine.wlf_bridge import (run_trans24_convert, run_2d_inv_tem,
+                                   run_3d_inv_tem)
 
 
 # =====================================================================
 # 主应用
 # =====================================================================
 class TFMMainApp:
-    WINDOW_TITLE = "TFM 时频电磁法完整处理系统 v2.0 (WLF算法集·全离线)"
+    WINDOW_TITLE = "TFM 时频电磁法完整处理系统 v2.0 (TEM算法集·全离线)"
     WINDOW_SIZE = "1280x820"
 
     def __init__(self, root: tk.Tk):
@@ -103,7 +103,7 @@ class TFMMainApp:
         self.tab_fwd   = ttk.Frame(self.nb);        self.nb.add(self.tab_fwd,   text=" ③ Forward Compare ")
         self.tab_sig   = ttk.Frame(self.nb);        self.nb.add(self.tab_sig,   text=" ④ Signal Viewer ")
         self.tab_ip    = ttk.Frame(self.nb);        self.nb.add(self.tab_ip,    text=" ⑤ IP Inversion ")
-        self.tab_wlf   = ttk.Frame(self.nb);        self.nb.add(self.tab_wlf,   text=" ⑥ WLF 2D/3D ")
+        self.tab_tem   = ttk.Frame(self.nb);        self.nb.add(self.tab_tem,   text=" ⑥ TEM 2D/3D ")
         self.tab_cur   = ttk.Frame(self.nb);        self.nb.add(self.tab_cur,   text=" ⑦ Tx Current ")
 
         self._build_tab_basic()
@@ -111,7 +111,7 @@ class TFMMainApp:
         self._build_tab_forward()
         self._build_tab_signal()
         self._build_tab_ip()
-        self._build_tab_wlf()
+        self._build_tab_tem()
         self._build_tab_current()
 
         # ---------- 底部状态栏（路径 + 日志滚动） ----------
@@ -334,7 +334,7 @@ class TFMMainApp:
                         npz = np.load(Path(out) / lt / f"{lt}_decay_curves.npz", allow_pickle=True)
                         data = npz['data'].item()
                         plot_channel_overlay(data, channel='Hx', attr='bandpass',
-                                             title=f'{lt} · Hx bandpass 关断窗口叠加 (WLF verify-kru)',
+                                             title=f'{lt} · Hx bandpass 关断窗口叠加 (TEM verify-kru)',
                                              out_png=Path(out)/lt/f'{lt}_Hx_verify_overlay.png')
                     except Exception as exc:
                         log(f"  [WARN] overlay {lt}: {exc}", level="W")
@@ -661,7 +661,7 @@ class TFMMainApp:
                    "o-", color="#2e75b5", linewidth=1.2, markersize=5, markerfacecolor="white")
         ax2.set_xlabel("t (μs)"); ax2.set_ylabel("|dBz/dt| predicted (V/m²)")
         ax2.set_title(f"V(t) 正演 — {st}"); ax2.grid(which="both", linestyle=":", linewidth=0.4)
-        self._fwd_fig.suptitle("Forward vs Observed  (WLF Mod1 正演对比)", fontsize=13, y=0.98)
+        self._fwd_fig.suptitle("Forward vs Observed  (TEM Mod1 正演对比)", fontsize=13, y=0.98)
         self._fwd_fig.tight_layout(); self._fwd_canvas.draw_idle()
 
     # =================================================================
@@ -769,7 +769,7 @@ class TFMMainApp:
         lf = ttk.LabelFrame(p, text="IP 反演参数 (Pelton Cole-Cole 4参数: ρ0/m/τ/c)")
         lf.pack(fill="x", padx=6, pady=6)
         self.var_ip_share = tk.BooleanVar(value=False)
-        self.var_ip_vtonly = tk.BooleanVar(value=True)  # vt_only_mode (WLF pcvogoss_pc) 默认开启, 已验证 RMSE_Vt 降66%
+        self.var_ip_vtonly = tk.BooleanVar(value=True)  # vt_only_mode (TEM 标准IP做法) 默认开启, 已验证 RMSE_Vt 降66%
         self.var_ip_lam = tk.StringVar(value="0.3")
         self.var_ip_nfev = tk.StringVar(value="100")
         self.var_ip_m0 = tk.StringVar(value="0.05")
@@ -791,9 +791,9 @@ class TFMMainApp:
             else:
                 ttk.Label(lf, text=t).grid(row=r, column=c, sticky="e", padx=6, pady=2)
                 ttk.Entry(lf, textvariable=v, width=12).grid(row=r, column=c+1, sticky="w", pady=2)
-        # ★ 新增: vt_only_mode 勾选框 (WLF pcvogoss_pc 工业做法) 单独一行醒目
+        # ★ 新增: vt_only_mode 勾选框 (TEM 标准IP做法 工业做法) 单独一行醒目
         ttk.Checkbutton(lf,
-            text="★ Vt-only 模式 (WLF pcvogoss_pc 工业做法, 直接拟合 decay NPZ 衰减曲线 — 推荐, 已验证 RMSE_Vt 降66%)",
+            text="★ Vt-only 模式 (TEM 标准IP做法 工业做法, 直接拟合 decay NPZ 衰减曲线 — 推荐, 已验证 RMSE_Vt 降66%)",
             variable=self.var_ip_vtonly).grid(row=3, column=0, columnspan=5, sticky="w", padx=8, pady=4)
         bf = ttk.Frame(p); bf.pack(fill="x", padx=6, pady=8)
         ttk.Button(bf, text="▶ 全线 IP 反演", style="Accent.TButton", width=22,
@@ -897,12 +897,12 @@ class TFMMainApp:
         self._ip_fig.tight_layout(); self._ip_canvas.draw_idle()
 
     # =================================================================
-    # TAB 6: WLF 2D/3D Bridge (TRANS24 / SWP24D / 3D tomo)
+    # TAB 6: TEM 2D/3D Bridge (FMT24 / 2DINV / 3D tomo)
     # =================================================================
-    def _build_tab_wlf(self):
-        p = self.tab_wlf
-        # 6.1 TRANS24
-        lf = ttk.LabelFrame(p, text="① TRANS24.exe — 格式互转 (.dat ↔ .cur ↔ .mod ↔ .grid3D)")
+    def _build_tab_tem(self):
+        p = self.tab_tem
+        # 6.1 FMT24
+        lf = ttk.LabelFrame(p, text="① FMT24.exe — 格式互转 (.dat ↔ .cur ↔ .mod ↔ .grid3D)")
         lf.pack(fill="x", padx=6, pady=4)
         ttk.Label(lf, text="Occam.dat:").grid(row=0, column=0, sticky="w", padx=4, pady=3)
         self.var_t_in = tk.StringVar()
@@ -912,13 +912,13 @@ class TFMMainApp:
                        filedialog.askopenfilename(filetypes=[("Occam dat", "*.dat")]))
                    ).grid(row=0, column=2, padx=3)
         ttk.Label(lf, text="输出格式:").grid(row=0, column=3, sticky="e", padx=4)
-        self.var_t_fmt = ttk.Combobox(lf, values=["wlf_cur", "wlf_mod", "occam"], width=10, state="readonly")
-        self.var_t_fmt.set("wlf_cur"); self.var_t_fmt.grid(row=0, column=4, padx=3)
-        ttk.Button(lf, text="▶ 运行 TRANS24", width=20,
+        self.var_t_fmt = ttk.Combobox(lf, values=["tem_cur", "tem_mod", "occam"], width=10, state="readonly")
+        self.var_t_fmt.set("tem_cur"); self.var_t_fmt.grid(row=0, column=4, padx=3)
+        ttk.Button(lf, text="▶ 运行 FMT24", width=20,
                    command=self._on_trans24).grid(row=0, column=5, padx=8, pady=3)
 
         # 6.2 SWP24 2D
-        lf2 = ttk.LabelFrame(p, text="② SWP24D.EXE — WLF 2D TEM Occam 反演 (按carmod2_kru+NewLimModR_reg)")
+        lf2 = ttk.LabelFrame(p, text="② 2DINV.EXE — TEM 2D TEM Occam 反演 (按2D反演+NewLimModR_reg)")
         lf2.pack(fill="x", padx=6, pady=4)
         ttk.Label(lf2, text="Occam.dat (线):").grid(row=0, column=0, sticky="w", padx=4, pady=3)
         self.var_2d_in = tk.StringVar()
@@ -933,11 +933,11 @@ class TFMMainApp:
         ttk.Label(lf2, text="★ LAMBDA_INIT:").grid(row=0, column=4, sticky="e", padx=4)
         self.var_2d_lam = tk.StringVar(value="1.0")
         ttk.Entry(lf2, textvariable=self.var_2d_lam, width=8).grid(row=0, column=5, padx=3)
-        ttk.Button(lf2, text="▶ 2D 反演 (SWP24D)", style="Accent.TButton",
+        ttk.Button(lf2, text="▶ 2D 反演 (2DINV)", style="Accent.TButton",
                    command=self._on_2d, width=22).grid(row=0, column=6, padx=8, pady=3)
 
         # 6.3 3D
-        lf3 = ttk.LabelFrame(p, text="③ WLF 3D 层析 (TRANS24合并 + 各线2D→3D切片插值 · carmod3_kru)")
+        lf3 = ttk.LabelFrame(p, text="③ TEM 3D 层析 (FMT24合并 + 各线2D→3D切片插值 · 3D层析)")
         lf3.pack(fill="x", padx=6, pady=4)
         ttk.Label(lf3, text="多选 Occam.dat (所有线):").grid(row=0, column=0, sticky="nw", padx=4, pady=3)
         self.txt_3d_dats = tk.Text(lf3, height=4, width=62, font=("Consolas", 10))
@@ -955,24 +955,24 @@ class TFMMainApp:
         # 6.4 输出面板 (桥接结果)
         lf4 = ttk.LabelFrame(p, text="桥接执行结果 / 错误 / BAT 输出")
         lf4.pack(fill="both", expand=True, padx=6, pady=4)
-        self.txt_wlf = tk.Text(lf4, height=14, font=("Consolas", 10),
+        self.txt_tem = tk.Text(lf4, height=14, font=("Consolas", 10),
                                bg="#252526", fg="#e0e0e0", wrap="word")
-        self.txt_wlf.pack(fill="both", expand=True, padx=4, pady=4)
+        self.txt_tem.pack(fill="both", expand=True, padx=4, pady=4)
 
     def _on_trans24(self):
         inp = self.var_t_in.get()
         if not Path(inp).exists():
             messagebox.showerror("错误", "请选 Occam.dat 文件"); return
         r = run_trans24_convert(inp, self.var_t_fmt.get(), log_fn=self.log)
-        self._write_wlf_report("[TRANS24] " + json.dumps(r, ensure_ascii=False, indent=2))
+        self._write_tem_report("[FMT24] " + json.dumps(r, ensure_ascii=False, indent=2))
 
     def _on_2d(self):
         inp = self.var_2d_in.get()
         if not Path(inp).exists():
             messagebox.showerror("错误", "请选 Occam.dat (线) 文件"); return
-        r = run_2d_inv_wlf(inp, include_ip=self.var_2d_ip.get(),
+        r = run_2d_inv_tem(inp, include_ip=self.var_2d_ip.get(),
                            lambda_init=float(self.var_2d_lam.get()), log_fn=self.log)
-        self._write_wlf_report("[2D-SWP24D] " + json.dumps(r, ensure_ascii=False, indent=2))
+        self._write_tem_report("[2D-2DINV] " + json.dumps(r, ensure_ascii=False, indent=2))
 
     def _3d_add_dats(self):
         fs = filedialog.askopenfilenames(filetypes=[("Occam dat", "*.dat")])
@@ -984,12 +984,12 @@ class TFMMainApp:
         outd = self.var_3d_out.get() or filedialog.askdirectory(title="3D输出目录")
         if not dats or not outd:
             messagebox.showwarning("警告", "请选多个 Occam.dat + 输出目录"); return
-        r = run_3d_inv_wlf(dats, Path(outd), log_fn=self.log)
-        self._write_wlf_report("[3D-TOMO] " + json.dumps(r, ensure_ascii=False, indent=2))
+        r = run_3d_inv_tem(dats, Path(outd), log_fn=self.log)
+        self._write_tem_report("[3D-TOMO] " + json.dumps(r, ensure_ascii=False, indent=2))
 
-    def _write_wlf_report(self, text):
-        self.txt_wlf.insert("end", "-" * 72 + "\n" + text + "\n\n")
-        self.txt_wlf.see("end")
+    def _write_tem_report(self, text):
+        self.txt_tem.insert("end", "-" * 72 + "\n" + text + "\n\n")
+        self.txt_tem.see("end")
         self.log(text.replace("\n", " | ")[:300])
 
     # =================================================================
@@ -997,7 +997,7 @@ class TFMMainApp:
     # =================================================================
     def _build_tab_current(self):
         p = self.tab_cur
-        ttk.Label(p, text="发射电流档处理 (CXXST01.DAT)\n提取: 平台幅值 | 关断时刻 | 纹波 | 与Excel I_tx 对照",
+        ttk.Label(p, text="发射电流档处理 (TXCAL01.DAT)\n提取: 平台幅值 | 关断时刻 | 纹波 | 与Excel I_tx 对照",
                   font=("Microsoft YaHei", 11, "bold"), foreground="#0a5cad").pack(pady=8)
         f1 = ttk.Frame(p); f1.pack(fill="x", padx=6)
         ttk.Label(f1, text="项目根:").pack(side="left", padx=2)
@@ -1036,7 +1036,7 @@ def main():
     # 缺失的 simpledialog 导入
     import tkinter.simpledialog  # noqa: F401 (used in mdl_edit_cell)
     app = TFMMainApp(root)
-    app.log("TFM GUI v2.0 启动 · WLF 全套算法集 · 100% OFFLINE 纯本地")
+    app.log("TFM GUI v2.0 启动 · TEM 全套算法集 · 100% OFFLINE 纯本地")
     app.log(f"  Python: {sys.executable}")
     app.log(f"  Tools : {_HERE}")
     root.mainloop()

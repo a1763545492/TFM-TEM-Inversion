@@ -2,7 +2,7 @@
 """
 tfm_engine.inv_algorithms (M9)
 ==============================
-1D 电阻率反演 多算法统一接口（对应 WLF 体系里可选的反演算法支路）:
+1D 电阻率反演 多算法统一接口（对应 TEM 体系里可选的反演算法支路）:
 
   algo='trf'   : scipy least_squares(TRF, bounds) — 现有 inversion.py 算法 (默认, 稳健)
   algo='lm'    : Levenberg-Marquardt (scipy method='lm') — 经典阻尼最小二乘, 无界(软裁剪)

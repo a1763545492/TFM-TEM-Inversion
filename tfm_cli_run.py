@@ -5,7 +5,7 @@ tfm_cli_run.py — TFM 时频电磁法完整处理 命令行 Headless 入口
 完全离线运行，仅读写本地文件。数据绝不上传云端。
 
 用法 (通过 run_tfm.bat 调):
-    run_tfm.bat --cli  --project D:\\MyProject\\myfile  --out D:\\WLF_Work\\example_output\\7_tfm_production
+    run_tfm.bat --cli  --project D:\\MyProject\\myfile  --out D:\\TEM_Work\\example_output\\7_tfm_production
     run_tfm.bat --cli  --no-preprocess --inv            (跳过预处理, 只跑1D反演)
     run_tfm.bat --cli  --occam --occam-exe D:\\Tools\\Occam1D.exe
 
@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
                    default=r'D:\MyProject\myfile',
                    help='数据根目录 (myfile/, 含 1线..5线 + 坐标文件.xls)')
     p.add_argument('--out', '-O',
-                   default=r'D:\WLF_Work\example_output\7_tfm_production',
+                   default=r'D:\MyProject\output',
                    help='输出根目录')
 
     # ------- Step 开关 -------
@@ -120,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--no-occam', dest='do_occam', action='store_false',
                    help='跳过Occam桥接')
     p.add_argument('--current', dest='do_current', action='store_true', default=False,
-                   help='运行 Step0: 发射电流档处理 (CXXST01 波形/幅值/关断 QC)')
+                   help='运行 Step0: 发射电流档处理 (TXCAL01 波形/幅值/关断 QC)')
     p.add_argument('--inv-algo', default='trf',
                    choices=list(ALGO_CHOICES) + list(ALGO_ADVANCED) + ['lci', 'all'],
                    help='1D 反演算法: trf(默认)/lm/occam/all 或高级算法 '

@@ -7,13 +7,13 @@ tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0
 
 **设计核心（单一数据源契约）**：
   - 100% 权威元数据来自 2 个 Excel 文件
-  - 大写档 (CXXST01.DAT) = 发射电流校准档
-  - 小写档 (cxxst00Y.dat) = 接收原始采集档 (Y=001/002/003)
+  - 大写档 (TXCAL01.DAT) = 发射电流校准档
+  - 小写档 (rxst00Y.dat) = 接收原始采集档 (Y=001/002/003)
   - Np=5 = 一台仪器 1 排列下的 5 次滚动/时间片采集
 
 **模块划分 (v2 共 11 个)**：
   [v1 基础 6]
-  - dat_parser.py    : WLF DAT 二进制格式解析 (Header=2048, int32, shape=(4, 544859, Np))
+  - dat_parser.py    : TEM DAT 二进制格式解析 (Header=2048, int32, shape=(4, 544859, Np))
   - excel_meta.py    : 4 sheets Excel 解析 → StationMap / SectionMap / TxMap
   - coord_loader.py  : 坐标文件.xls 解析 → station_code → (X, Y, Z) / source_code → (X,Y)
   - preprocess.py    : 4 阶段流水线 → ρa + Occam.dat + ρa 断面 PNG
@@ -21,10 +21,10 @@ tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0
   - occam_bridge.py  : Occam1D cfg/model-p 生成 + 命令行桥接 (含 dry-run)
   [v2 新增 5]
   - forward.py           : 1D TEM 正演 (扩散深度近似 + 真频域: 复电阻率层状递推 + Guptasarma J1 + Key2012 DLF, Cole-Cole IP)
-  - preprocess_plus.py   : WLF 体系增强预处理 (AATZero 关断精修 + 陷波 + 带通 + MAD 野值 + 衰减曲线提取)
+  - preprocess_plus.py   : TEM 体系增强预处理 (AATZero 关断精修 + 陷波 + 带通 + MAD 野值 + 衰减曲线提取)
   - ip_inversion.py      : 1D 极化率(IP)反演 (Pelton Cole-Cole 4参数, share_τ/c 稳健模式)
-  - signal_viz.py        : WLF curview/verify 风格信号可视化 (4×4 衰减曲线子图 + 多站 Hx 叠加)
-  - wlf_bridge.py        : WLF EXE 桥接 (TRANS24 格式转换 + SWP24D 2D反演 + 3D tomo 流水线)
+  - signal_viz.py        : TEM curview/verify 风格信号可视化 (4×4 衰减曲线子图 + 多站 Hx 叠加)
+  - wlf_bridge.py        : TEM EXE 桥接 (FMT24 格式转换 + 2DINV 2D反演 + 3D tomo 流水线)
   [v3 新增 2]
   - current_proc.py      : 发射电流档处理 (平台幅值/关断时刻/纹波 QC + 波形 PNG)
   - inv_algorithms.py    : 1D 电阻率多算法反演 (trf / lm / 纯Python occam) + 算法对比
@@ -51,7 +51,7 @@ from . import forward           # 1D 正演 (tem_forward_1d 扩散深度 / tem_f
 from . import preprocess_plus   # 增强预处理 + 衰减曲线 (AATZero/notch/bandpass)
 from . import ip_inversion      # 1D IP 极化率反演 (Cole-Cole 4 参数)
 from . import signal_viz        # 4×4 信号子图 + verify_kru 叠加
-from . import wlf_bridge        # WLF EXE 桥接 (2D/3D/格式转换)
+from . import wlf_bridge        # TEM EXE 桥接 (2D/3D/格式转换)
 
 # v3 扩展模块
 from . import current_proc      # 发射电流档处理

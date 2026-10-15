@@ -2,7 +2,7 @@
 """
 tfm_engine.signal_viz (M5)
 ==========================
-WLF curview_kru 风格信号曲线可视化（完全统一图形风格，供 CLI + GUI 共用）：
+TEM curview_kru 风格信号曲线可视化（完全统一图形风格，供 CLI + GUI 共用）：
   ┌─ Ex ─┐┌─ Ey ─┐┌─ Hx ─┐┌─ Hy ─┐
   │原始  ││原始  ││原始  ││原始  │  (time-domain full waveform, t_cutoff竖线)
   │去DC  ││去DC  ││去DC  ││去DC  │
@@ -34,14 +34,14 @@ def make_decay_4x4figure(station_decay: dict,
                          xlim_pre_ms: tuple = (-5.0, 30.0),  # 相对关断点 (ms)
                          ) -> 'matplotlib.figure.Figure':
     """
-    构造 4×4 子图信号图（WLF curview_kru）。
+    构造 4×4 子图信号图（TEM curview_kru）。
     station_decay: preprocess_plus.process_one_cube_decay 返回的 dict
                    或 decay_curves.npz 中单个 station: {ch: {t_full_s, raw, dc_removed,
                    notched, bandpass, t_cutoff_s, gates_t_s, gates_values}}
     """
     fig, axes = plt.subplots(4, 4, figsize=(17, 10), sharex='col',
                              gridspec_kw={'hspace': 0.32, 'wspace': 0.28})
-    fig.suptitle(f'WLF Signal Viewer  {line_tag} · Station {station_code}',
+    fig.suptitle(f'TEM Signal Viewer  {line_tag} · Station {station_code}',
                  fontsize=13, y=0.995, weight='bold')
     for ci, ch in enumerate(_CH_ORDER):
         chd = station_decay.get(ch)
@@ -130,7 +130,7 @@ def batch_save_decay_pngs(decay_npz_or_dict: str | Path | dict,
 
 
 # ============================================================
-# 通道对比图（所有 stations 某通道某阶段叠加 —— WLF verify_kru）
+# 通道对比图（所有 stations 某通道某阶段叠加 —— TEM verify_kru）
 # ============================================================
 def plot_channel_overlay(decay_data: dict, channel: str = 'Hx',
                          attr: str = 'bandpass',
@@ -138,7 +138,7 @@ def plot_channel_overlay(decay_data: dict, channel: str = 'Hx',
                          max_stations: int = 20,
                          out_png: Optional[str | Path] = None,
                          title: str = '') -> 'matplotlib.figure.Figure':
-    """WLF verify_kru: 多站 Hx bandpass 关断窗口叠加。"""
+    """TEM verify_kru: 多站 Hx bandpass 关断窗口叠加。"""
     fig, ax = plt.subplots(figsize=(11, 5.5))
     keys = list(decay_data.keys())[:max_stations]
     from matplotlib import cm
@@ -152,7 +152,7 @@ def plot_channel_overlay(decay_data: dict, channel: str = 'Hx',
                 color=cmap(i % cmap.N), alpha=0.85, label=str(st))
     ax.axvline(0, color='red', linestyle='--', linewidth=0.9, alpha=0.8)
     ax.set_xlabel('Time from cutoff (ms)'); ax.set_ylabel(f'{channel} {attr}')
-    ax.set_title(title or f'{channel} · {attr}  overlay ({len(keys)} stations, WLF verify-kru style)',
+    ax.set_title(title or f'{channel} · {attr}  overlay ({len(keys)} stations, TEM verify-kru style)',
                  fontsize=11)
     ax.grid(True, which='major', linestyle=':', linewidth=0.4)
     ax.legend(ncol=3, fontsize=6, loc='upper right', frameon=False)

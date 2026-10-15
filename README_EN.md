@@ -3,9 +3,9 @@
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue) ![License](https://img.shields.io/badge/License-MIT-green) ![Offline](https://img.shields.io/badge/100%25-Offline-brightgreen)
 
 An all-in-one Time-Frequency Electromagnetic (TFM / TEM & IP) processing suite — a **pure Python**
-implementation benchmarked against the commercial WLF software. It covers the full workflow from
-raw WLF binary acquisition files (DAT) → preprocessing → apparent resistivity → 1D resistivity
-inversion (multiple algorithms) → IP chargeability inversion → Occam1D / WLF EXE bridging.
+implementation benchmarked against the commercial TEM software. It covers the full workflow from
+raw TEM binary acquisition files (DAT) → preprocessing → apparent resistivity → 1D resistivity
+inversion (multiple algorithms) → IP chargeability inversion → Occam1D / TEM EXE bridging.
 
 > **Offline statement**: This software runs 100% offline. All data is read from and written to
 > local disk only — nothing is ever uploaded to any cloud or remote server.
@@ -16,14 +16,14 @@ inversion (multiple algorithms) → IP chargeability inversion → Occam1D / WLF
 
 | Module | Capability |
 |---|---|
-| Tx current processing | Waveform analysis of uppercase calibration files CXXST01: plateau amplitude, turn-off time t_off, bipolar ripple, inter-picket consistency QC |
+| Tx current processing | Waveform analysis of uppercase calibration files TXCAL01: plateau amplitude, turn-off time t_off, bipolar ripple, inter-picket consistency QC |
 | Preprocessing | Inventory → DAT loading → cube alignment (authoritative station codes) → ADC conversion → DC removal → 25 time gates → ρa (central-loop formula) → QC → Occam.dat |
 | Enhanced preprocessing | AATZero turn-off refinement, notch, band-pass, MAD outlier rejection, decay-curve extraction (preprocess_plus) |
-| Layered-model forward | Dual-engine 1D TEM forward: Boerner diffusion-depth approximation (default, dimension-consistent with WLF Vt) + rigorous true-frequency-domain solution (complex-resistivity layered recursion + Guptasarma J₁ Hankel DLF + Key2012 sine DLF), with Cole-Cole IP support |
+| Layered-model forward | Dual-engine 1D TEM forward: Boerner diffusion-depth approximation (default, dimension-consistent with TEM Vt) + rigorous true-frequency-domain solution (complex-resistivity layered recursion + Guptasarma J₁ Hankel DLF + Key2012 sine DLF), with Cole-Cole IP support |
 | 1D inversion (multi-algo) | TRF (trust-region, default) / LM (Levenberg-Marquardt) / pure-Python Occam (smooth inversion), with three-algorithm comparison |
 | IP chargeability inversion | Pelton Cole-Cole 4-parameter model (ρ, m, τ, c), robust shared-τ/c mode |
-| Signal visualization | WLF curview/verify style: 4×4 decay-curve subplots, multi-station Hx overlay |
-| Bridging | Occam1D cfg/model-p/BAT generation (with dry-run); WLF TRANS24 format conversion, SWP24D 2D inversion, 3D tomo pipeline |
+| Signal visualization | TEM curview/verify style: 4×4 decay-curve subplots, multi-station Hx overlay |
+| Bridging | Occam1D cfg/model-p/BAT generation (with dry-run); TEM FMT24 format conversion, 2DINV 2D inversion, 3D tomo pipeline |
 
 ## Repository Layout
 
@@ -42,7 +42,7 @@ TFM-TEM-Inversion/
     preprocess.py        preprocess_plus.py
     inversion.py         inv_algorithms.py  ip_inversion.py
     forward.py           occam_bridge.py    signal_viz.py
-    wlf_bridge.py        current_proc.py
+    tem_bridge.py        current_proc.py
 ```
 
 ## Installation
@@ -78,7 +78,7 @@ Double-click `run_tfm.bat` or run `python tfm_gui.py`. Seven tabs:
 3. **Forward Compare** — model forward vs observed curve overlay
 4. **Signal Viewer** — 4×4 decay curves / multi-station Hx inspection
 5. **IP Inversion** — line-wide / single-station chargeability inversion
-6. **WLF 2D/3D** — TRANS24 / SWP24D / 3D tomo bridging
+6. **TEM 2D/3D** — FMT24 / 2DINV / 3D tomo bridging
 7. **Tx Current** — transmitter-current waveform & QC
 
 ## Example Results
@@ -115,10 +115,10 @@ To reduce overall RMSE, follow the tuning discipline: adjust `RHOA_SCALE_CAL` fi
 - File size = `2048 + 4 × 544859 × Np × 4` bytes (Header + int32 LE data; Np in 1..10)
 - Header is 2048 bytes; first 64 bytes = 32 int16 LE values:
   `Int16[11..14]=8224`, `Int16[15]=1024`, `Int16[26]=0x0102`, `Int16[29]=1`, `Int16[27]=256+Np`;
-  `Int16[4:15]` holds an ASCII signature (uppercase current files contain "Xi'An,China",
+  `Int16[4:15]` holds an ASCII signature (uppercase current files contain "SurveyRegion",
   lowercase receiver files contain "area"; one character per int16 low byte)
 - Data block: int32 LE, `reshape(4, 544859, Np, order='C')`, channels 0=Ex 1=Ey 2=Hx 3=Hy
-- Naming: uppercase `CXXST01.DAT` (transmitter-current calibration);
+- Naming: uppercase `TXCAL01.DAT` (transmitter-current calibration);
   lowercase `cXXXst00Y.dat` (receiver, Y=001/002/003)
 
 ### Excel four-sheet contract (`X线/发射接收备注信息.xlsx` per survey line)
@@ -141,7 +141,7 @@ To reduce overall RMSE, follow the tuning discipline: adjust `RHOA_SCALE_CAL` fi
 ## Algorithms
 
 - **Forward (diffusion-depth approx., default)**: Boerner-style δ(t)=√(2ρ_ref·t/μ₀)/2 mapping layered
-  log₁₀ρ onto ρa(t); three-way dimension-consistent with WLF Vt (preprocess Nabighian ρa ↔ forward ↔ inversion)
+  log₁₀ρ onto ρa(t); three-way dimension-consistent with TEM Vt (preprocess Nabighian ρa ↔ forward ↔ inversion)
 - **Forward (true frequency domain)**: `tem_forward_1d_freq` — frequency-domain complex-resistivity
   layered recursion (air layer on top; IP via the Pelton Cole-Cole complex-resistivity path) +
   Guptasarma 47-point J₁ Hankel DLF (central-loop kernel) + Key 2012 201-point sine DLF
@@ -149,7 +149,7 @@ To reduce overall RMSE, follow the tuning discipline: adjust `RHOA_SCALE_CAL` fi
   t^-2.5 asymptote exactly (100 Ω·m half-space late-time ρa recovers within ±5%); reproduces the
   "conductive-interlayer S control" physics missing from the diffusion-depth approximation.
   Companion functions: `apparent_resistivity_dbzdt_freq` (rigorous W&H late-time inversion) and
-  `tem_forward_1d_freq_vt` (WLF Vt dimension wrapper, drop-in replacement for inversion/GUI).
+  `tem_forward_1d_freq_vt` (TEM Vt dimension wrapper, drop-in replacement for inversion/GUI).
   IP limitation: late-time dBz/dt is an ~11-decade broadband cancellation residual; Cole-Cole
   dispersion perturbs the DLF cancellation balance and creates artifacts, so t > 2τ_eff blends
   smoothly back to the no-IP baseline; the IP-sensitive window t ~ τ is fully preserved

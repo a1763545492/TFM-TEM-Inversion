@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 """
-dat_parser.py — WLF DAT 二进制格式统一读取器
+dat_parser.py — TEM DAT 二进制格式统一读取器
 格式契约（100% 锁死，之前 V1~V3 实锤校验通过）：
   File size = 2048 + 4 × 544,859 × Np × 4  bytes (Header + int32_LE data)
   Header = 2048 bytes, first 64 bytes = Int16_LE[0:32]
     Int16[27] - 256 = Np  (Np = number of pickets / rolling captures)
-    Int16[5:6]  → ASCII "ra"/"ea" / "Xi'an,China" / "area"
+    Int16[5:6]  → ASCII "ra"/"ea" / "SurveyRegion" / "area"
     Int16[11:14] = 8,224 (magic, 恒固定)
     Int16[15] = 1,024 (magic)
     Int16[26] = 0x0102 = 258 (version word)
@@ -46,9 +46,9 @@ class WlfDatHeader:
     file_size: int
     raw_int16: np.ndarray       # shape=(32,) Int16[0:32] from header
     n_pickets: int              # Np (Int16[27]-256, 锁死)
-    ascii_sig: str              # Int16[4:15] 转 ASCII (Xi'an,China / area)
+    ascii_sig: str              # Int16[4:15] 转 ASCII (SurveyRegion / area)
     version_word: int           # Int16[26] = 0x0102
-    section_code: str = ""      # 从文件名解析: cXXst00Y / CXXST01 → XX
+    section_code: str = ""      # 从文件名解析: cXXst00Y / TXCAL01 → XX
     instrument_code: str = ""   # 从文件名解析: st00Y → Y (001/002/003; 大写档为空)
 
 
@@ -105,7 +105,7 @@ def auto_truncate_if_mismatch(fp: Path, log_fn: Callable[[str], None]) -> int:
     return 0
 
 
-def load_wlf_dat(fp: Path, *, log_fn: Callable[[str], None] = None,
+def load_tem_dat(fp: Path, *, log_fn: Callable[[str], None] = None,
                  validate: bool = True, strict_per_ch: bool = True) -> WlfDatData:
     """唯一 DAT 读取入口 (单一数据源契约)."""
     log_fn = log_fn or (lambda s: None)
