@@ -2,7 +2,7 @@
 """
 tfm_engine.current_proc (M8)
 ============================
-TEM 体系 发射电流数据处理模块（对应 TEM 大写校准档 TXCAL01.DAT 的电流支路）：
+WLF 体系 发射电流数据处理模块（对应 WLF 大写校准档 CXXST01.DAT 的电流支路）：
   - 逐 section 读取发射电流档 (大写 DAT, Np 桩 × 4 通道 × 544859 样点)
   - 自动识别电流监测通道 (平台幅值最大的通道)
   - 提取: 平台电流幅值 (counts/V)、关断时刻 t_off、平台纹波 %、通断占空
@@ -30,10 +30,10 @@ from matplotlib import rcParams
 rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial']
 rcParams['axes.unicode_minus'] = False
 
-from .dat_parser import load_tem_dat, PER_CHANNEL
+from .dat_parser import load_wlf_dat, PER_CHANNEL
 from .preprocess import run_inventory, DEFAULT_CFG
 
-_TEM_DEFAULT_FS_HZ = 27_243_000.0   # 与 preprocess_plus 统一 (544859 样 / ~20ms)
+_WLF_DEFAULT_FS_HZ = 27_243_000.0   # 与 preprocess_plus 统一 (544859 样 / ~20ms)
 _CH_NAMES = ['Ex', 'Ey', 'Hx', 'Hy']
 
 
@@ -101,9 +101,9 @@ def process_one_tx_dat(dat_path: Path, line_tag: str, section: str,
                        force_channel: Optional[str] = None) -> tuple[CurrentQC, dict]:
     """读 1 个大写电流档 → CurrentQC + 波形数据 (供绘图).
     force_channel: 强制指定电流监测通道 ('Ex'/'Ey'/'Hx'/'Hy'), None=自动选幅值最大者."""
-    fs = float(cfg.get('TEM_FS_HZ', _TEM_DEFAULT_FS_HZ))
+    fs = float(cfg.get('TEM_FS_HZ', _WLF_DEFAULT_FS_HZ))
     g_adc = float(cfg.get('G_ADC_COUNTS_PER_VOLT', DEFAULT_CFG['G_ADC_COUNTS_PER_VOLT']))
-    d = load_tem_dat(dat_path, log_fn=log_fn)
+    d = load_wlf_dat(dat_path, log_fn=log_fn)
     cube = d.cube.astype(np.float64)                 # (4, 544859, Np)
     med_wave = np.median(cube, axis=2)               # (4, 544859) 多桩 median 抗野值
 

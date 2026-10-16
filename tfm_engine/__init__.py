@@ -72,6 +72,16 @@ from . import denoise_ae        # 去噪自编码器 (衰减曲线噪声压制)
 from . import viz_3d            # 拟 2D 断面 / 3D 体可视化 (matplotlib + plotly HTML)
 from . import project_db        # SQLite 项目库 (测线/测站/反演结果管理)
 
+# v7 扩展模块 (2026-06)
+from . import parallel_utils    # 多测线 ProcessPool 并行调度 (线级并行, 异常隔离)
+from . import model_compare      # 多算法反演对比 QC 仪表盘 (断面/拟合/RMSE统计)
+from . import export_formats     # 标准化导出 (Surfer XYZ/DSAA-GRD, CSV, GeoTIFF)
+from . import report_gen         # 自动化单文件 HTML 报告 (图片 base64 内嵌)
+from . import timelapse          # 多时态监测对比 (电阻率变化率, 网格自动对齐)
+from . import fem2d_forward      # 2D 有限元 DC 正演 (三角剖分/PEFC 近源加密/VTI单元)
+from . import anisotropy         # VTI 各向异性 (ρh/ρv, λ 参数化)
+from . import dl_inversion       # DL 端到端 1D 反演 (1D U-Net, torch可选/numpy降级)
+
 __all__ = (
     # v1
     "dat_parser", "excel_meta", "coord_loader",
@@ -88,5 +98,8 @@ __all__ = (
     # v6
     "fem_forward", "static_correction", "resolution",
     "nn_initial", "denoise_ae", "viz_3d", "project_db",
+    # v7
+    "parallel_utils", "model_compare", "export_formats", "report_gen",
+    "timelapse", "fem2d_forward", "anisotropy", "dl_inversion",
 )
 

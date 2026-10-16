@@ -2,13 +2,13 @@
 """
 tfm_engine.forward
 ==================
-TEM 体系 1D TEM 正演引擎（层状介质 + 可选 IP 极化率）
-完全遵循 TEM 设计原理:
-  - 核心: Boerner/TEM Mod1 扩散深度等效加权 (与 v1 inversion.forward_rhoa 接口完全对齐,
+WLF 体系 1D TEM 正演引擎（层状介质 + 可选 IP 极化率）
+完全遵循 WLF 设计原理:
+  - 核心: Boerner/WLF Mod1 扩散深度等效加权 (与 v1 inversion.forward_rhoa 接口完全对齐,
           因此正演↔反演↔预处理 Nabighian ρa 公式三向天生量纲自洽, 无缩放bug)
   - 真频域正演: 含空气界面反射系数递推 + Guptasarma J1 滤波 (中心回线核)
                 + Key(2012) 201点正弦DLF 频→时转换 → tem_forward_1d_freq
-  - IP: Pelton Cole-Cole 时域近似乘子 (与 TEM 标准IP做法.m 的 IP 正演支路一致)
+  - IP: Pelton Cole-Cole 时域近似乘子 (与 WLF pcvogoss_pc.m 的 IP 正演支路一致)
   - 观测方式: 中心回线 VMD dBz/dt (输出 Vt 的量纲与 preprocess.py 提取的 Hx_gated 对齐,
           因此 apparent_resistivity_dbzdt 的 RHOA_SCALE_CAL=1e6 可直接复用)
 
@@ -163,7 +163,7 @@ _KEY201_SIN = np.array([
 # ============================================================
 @dataclass
 class LayeredModel:
-    """1D TEM 层状模型（TEM carmod 系列接口兼容）。
+    """1D TEM 层状模型（WLF carmod 系列接口兼容）。
     thickness_m: 长度 N，thickness_m[N-1] = np.inf 或 >=9999 代表半空间
     rho_ohm_m:  长度 N，各层电阻率 (Ω·m)
     IP 参数（可选，None=无极化）:
@@ -231,7 +231,7 @@ class LayeredModel:
 
 
 # ============================================================
-# 1D TEM 正演核心: TEM Mod1 Boerner 扩散深度等效加权 (永远稳定, 三向自洽)
+# 1D TEM 正演核心: WLF Mod1 Boerner 扩散深度等效加权 (永远稳定, 三向自洽)
 # ============================================================
 
 def _layered_profile_on_zgrid(model: LayeredModel, z_fine: np.ndarray) -> tuple:
@@ -257,9 +257,9 @@ def _layered_profile_on_zgrid(model: LayeredModel, z_fine: np.ndarray) -> tuple:
 
 
 def _diffusion_sensitivity_kernel(u: np.ndarray) -> np.ndarray:
-    """TEM TEM 中心回线感应深度加权核 (VMD 归一化协方差)
+    """WLF TEM 中心回线感应深度加权核 (VMD 归一化协方差)
        K(u) = 15/8 * u^2 * exp(-5u^2/2),   u = z / delta(t)
-       峰值在 u ≈ 0.63; u > 4 → K ≈ 0.  (与 Raiche 1987 / TEM carmod1_kru 一致)"""
+       峰值在 u ≈ 0.63; u > 4 → K ≈ 0.  (与 Raiche 1987 / WLF carmod1_kru 一致)"""
     u2 = np.clip(u * u, 0.0, 25.0)   # 截断: |u|>5 强制 0, 防 exp 下溢
     return 1.875 * u2 * np.exp(-2.5 * u2)
 
@@ -292,7 +292,7 @@ def _tau_eff_weighted(model: LayeredModel, t_arr: np.ndarray) -> np.ndarray:
 
 def _pelton_rho_reducer(t_arr: np.ndarray,
                         m_eff: float, tau_eff: float, c_eff: float) -> np.ndarray:
-    """Pelton Cole-Cole 电阻率乘子 (TEM 标准IP做法 正确方向: 在电阻率域应用, 不在 Vt 域)
+    """Pelton Cole-Cole 电阻率乘子 (WLF pcvogoss_pc 正确方向: 在电阻率域应用, 不在 Vt 域)
        ρ_IP(t) = ρ_noIP(t) * R_IP(t), 其中
          R_IP(t) = 1 - m * (1 - 1/(1 + (t/τ)^c))   ∈ [1-m, 1]
        物理效果: 晚期 (t>>τ)  ρ_IP  = ρ*(1-m) → 更低阻 → 扩散更慢 → Vt 晚期更大。
@@ -317,9 +317,9 @@ def tem_forward_1d(model: LayeredModel,
                    log_fn: Optional[Callable[[str], None]] = None,
                    ) -> tuple[np.ndarray, np.ndarray]:
     """
-    TEM 标准 1D TEM 正演 (中心回线 VMD, dBz/dt 绝对值, 与预处理 S3-S7 量纲完全对齐).
+    WLF 标准 1D TEM 正演 (中心回线 VMD, dBz/dt 绝对值, 与预处理 S3-S7 量纲完全对齐).
 
-    算法 (TEM Mod1 扩散深度等效):
+    算法 (WLF Mod1 扩散深度等效):
       ① 深度细网格 z~geomspace(0.5m, 10km, 600), 映射 LayeredModel 至 (rho, m, tau, c)_z
       ② 每个 t_j:
          - 迭代 3 次自洽: rho_ref -> delta(t)=sqrt(2 rho_ref t/mu0)
@@ -397,7 +397,7 @@ def tem_forward_1d(model: LayeredModel,
 def apparent_resistivity_dbzdt(dbzdt: np.ndarray, t_sec: np.ndarray,
                                tx_area_m2: float, tx_current_a: float,
                                RHOA_SCALE_CAL: float = 1_000_000) -> np.ndarray:
-    """与 TEM RhoCalc / preprocess.py S7 完全一致的 Nabighian 中心回线 ρa 公式。
+    """与 WLF RhoCalc / preprocess.py S7 完全一致的 Nabighian 中心回线 ρa 公式。
        rhoa = (mu0/4π)^1.5 * (2*M)^(2/3) * RHOA_SCALE_CAL * t^(-1.5) / |Vt|^(2/3)
        — 与 tem_forward_1d 为严格代数互逆, 因此正演→视电阻率在均匀半空上恒等。"""
     t_safe = np.maximum(np.asarray(t_sec, dtype=np.float64), 1e-12)
@@ -410,25 +410,25 @@ def apparent_resistivity_dbzdt(dbzdt: np.ndarray, t_sec: np.ndarray,
 
 
 # ============================================================
-# 2D/3D 占位接口（返回结构化错误信息；真正调用走 M7_TEM_Bridge）
+# 2D/3D 占位接口（返回结构化错误信息；真正调用走 M7_WLF_Bridge）
 # ============================================================
 def tem_forward_2d_section(stations_x_m: np.ndarray,
                            model_2d: dict,
                            gates_sec: np.ndarray,
-                           backend: str = 'tem_swp24',
+                           backend: str = 'wlf_swp24',
                            log_fn: Optional[Callable[[str], None]] = None) -> dict:
-    """2D 剖面正演占位（按 TEM 设计原理：2D反演 → 实际执行 SWP24.EXE 桥接）。
-    backend='python' 将抛出 NotImplementedError(纯Python 2D FDTD 计算量过大，建议 TEM EXE)。
+    """2D 剖面正演占位（按 WLF 设计原理：carmod2_kru → 实际执行 SWP24.EXE 桥接）。
+    backend='python' 将抛出 NotImplementedError(纯Python 2D FDTD 计算量过大，建议 WLF EXE)。
     """
     if backend == 'python':
         raise NotImplementedError("纯Python 2D TEM FDTD 计算量极大(≥10⁷网格)，"
-                                  "请使用 backend='tem_swp24' 桥接 TEM 2DINV.EXE")
+                                  "请使用 backend='wlf_swp24' 桥接 WLF SWP24D.EXE")
     return {'status': 'bridge_ready',
-            'exe_hint': '2DINV.EXE',
+            'exe_hint': 'SWP24D.EXE',
             'stations_x_m': stations_x_m,
             'n_stations': len(stations_x_m),
             'n_gates': len(gates_sec),
-            'message': f'请通过 M7_TEM_Bridge.run_2d_inv_tem(...) 调用 TEM 2D 反演'}
+            'message': f'请通过 M7_WLF_Bridge.run_2d_inv_wlf(...) 调用 WLF 2D 反演'}
 
 
 # ============================================================
@@ -526,7 +526,7 @@ def tem_forward_1d_freq(model: LayeredModel,
       ④ 输出真 SI dBz/dt [T/s]: 晚期与 Ward & Hohmann t^(-5/2) 渐近精确一致
          (已验证: 100Ω·m 半空间 a/δ<0.5 时晚期 ρa 恢复 100±1%)。
          视电阻率必须用 apparent_resistivity_dbzdt_freq (真晚期公式);
-         勿复用 apparent_resistivity_dbzdt (TEM 体系 t^(-2.25) 等效量纲, 不兼容)。
+         勿复用 apparent_resistivity_dbzdt (WLF 体系 t^(-2.25) 等效量纲, 不兼容)。
 
     冻结函数签名 (GUI / 反演模块依赖):
       (t, dbz) = tem_forward_1d_freq(model, tx_area, tx_current, gates_sec)
@@ -597,12 +597,12 @@ def tem_forward_1d_freq_vt(model: LayeredModel,
                            include_ip: bool = True,
                            log_fn: Optional[Callable[[str], None]] = None,
                            ) -> tuple[np.ndarray, np.ndarray]:
-    """真频域正演 → TEM Vt 量纲封装 (反演/GUI 可直接替换 tem_forward_1d)。
+    """真频域正演 → WLF Vt 量纲封装 (反演/GUI 可直接替换 tem_forward_1d)。
 
     链路:
       ① tem_forward_1d_freq             → 真 SI dBz/dt [T/s] (IP 走频率域复电阻率)
       ② apparent_resistivity_dbzdt_freq → W&H 真晚期 ρa(t)
-      ③ TEM Nabighian 正向公式代数反映射回 Vt:
+      ③ WLF Nabighian 正向公式代数反映射回 Vt:
             Vt(t) = [ COEF·t^(-1.5) / ρa(t) ]^1.5,
             COEF = (μ0/4π)^1.5 · (2M)^(2/3) · RHOA_SCALE_CAL_DEFAULT
         输出量纲与 tem_forward_1d 严格一致 (验证: 无 IP 模型晚期两引擎
@@ -625,14 +625,14 @@ def tem_forward_1d_freq_vt(model: LayeredModel,
 
 def tem_forward_3d_volume(grid_xyz: tuple, model_3d: dict,
                           gates_sec: np.ndarray,
-                          backend: str = 'tem_carmod3',
+                          backend: str = 'wlf_carmod3',
                           log_fn: Optional[Callable[[str], None]] = None) -> dict:
-    """3D 体积正演占位（按 TEM 3D层析 → 3D 层析切片）。"""
+    """3D 体积正演占位（按 WLF carmod3_kru → 3D 层析切片）。"""
     if backend == 'python':
         raise NotImplementedError("纯Python 3D TEM Yee-lattice FDTD 计算量极大，"
-                                  "请使用 TEM 商业 EXE 桥接")
+                                  "请使用 WLF 商业 EXE 桥接")
     return {'status': 'bridge_ready',
-            'exe_hint': 'FMT24.exe + 2D结果插值→3D',
+            'exe_hint': 'TRANS24.exe + 2D结果插值→3D',
             'grid': grid_xyz, 'n_gates': len(gates_sec)}
 
 

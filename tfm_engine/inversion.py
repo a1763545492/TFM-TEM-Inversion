@@ -84,6 +84,51 @@ def forward_rhoa(theta_log10: np.ndarray, t_obs: np.ndarray,
     return 10.0 ** log_rhoa
 
 
+def interp_weight_matrix(t_obs: np.ndarray, z_centers: np.ndarray,
+                         rho_ref: float) -> np.ndarray:
+    """解析雅可比核: 因 log10(ρa_pred) = W @ θ (np.interp 对 θ 分段线性),
+    返回插值权重矩阵 W, shape=(Ng, N_layers), 每行至多 2 个非零元。
+
+    性质:
+      - 构造只需 1 次 z(t) 计算, **与层数无关**, 无需任何额外正演调用
+        (数值差分需 N_layers+1 次正演, 25 层时慢约 26 倍)
+      - 区间外 (扩散深度浅于/深于层网格) np.interp 钳到端点 → 权重全给端点层
+      - 与 forward_rhoa 严格一致 (机器精度)
+    """
+    log_z = np.log10(np.maximum(z_centers, 1e-3))
+    z_of_t = np.sqrt(2.0 * rho_ref * np.maximum(t_obs, 1e-12) / MU0) * 0.5
+    log_zt = np.log10(np.maximum(z_of_t, 1e-3))
+    n_g = t_obs.size
+    n_l = z_centers.size
+    W = np.zeros((n_g, n_l), dtype=np.float64)
+    below = log_zt <= log_z[0]
+    above = log_zt >= log_z[-1]
+    W[below, 0] = 1.0
+    W[above, -1] = 1.0
+    inner = ~(below | above)
+    if inner.any():
+        idx = np.searchsorted(log_z, log_zt[inner]) - 1
+        idx = np.clip(idx, 0, n_l - 2)
+        alpha = (log_zt[inner] - log_z[idx]) / (log_z[idx + 1] - log_z[idx])
+        rows = np.where(inner)[0]
+        W[rows, idx] = 1.0 - alpha
+        W[rows, idx + 1] = alpha
+    return W
+
+
+def analytic_jacobian(theta_log10: np.ndarray, t_obs: np.ndarray,
+                      z_centers: np.ndarray, rho_ref: float,
+                      weights: np.ndarray) -> np.ndarray:
+    """加权对数残差 r = (log10 ρa_pred − log10 ρa_obs)·w 对 θ 的解析雅可比。
+
+    与数值前向差分 (_numeric_jacobian) 在模型定义域内完全等价
+    (模型对 θ 为线性, 截断误差=0), 成本由 N_layers+1 次正演降为 1 次。
+    `theta_log10` 仅为保持签名一致而保留, 不参与计算。
+    """
+    W = interp_weight_matrix(t_obs, z_centers, rho_ref)
+    return W * np.asarray(weights, dtype=np.float64)[:, None]
+
+
 def invert_one_station(t_obs: np.ndarray, rhoa_obs: np.ndarray, err_obs: np.ndarray,
                        z_centers: np.ndarray, cfg: dict,
                        log_path: Path) -> tuple[np.ndarray, dict]:
@@ -109,8 +154,27 @@ def invert_one_station(t_obs: np.ndarray, rhoa_obs: np.ndarray, err_obs: np.ndar
         r_smooth = np.sqrt(cfg['LAMBDA_SMOOTH']) * np.diff(theta)
         return np.concatenate([r_data, r_smooth])
 
+    def jac(theta):
+        """解析雅可比: 数据块 = 插值权重矩阵 W·inv_w; 光滑块 = sqrt(λ)·D1。"""
+        if cfg.get('JAC_MODE', 'analytic') == 'numeric':
+            base = forward_rhoa(theta, t_g, z_centers, cfg['RHO_REF_DIFF'])
+            lb = np.log10(np.maximum(base, cfg['LOG_EPS']))
+            Jd = np.zeros((t_g.size, n_l))
+            for j in range(n_l):
+                tp = theta.copy(); tp[j] += 1e-4
+                lp = np.log10(np.maximum(forward_rhoa(tp, t_g, z_centers, cfg['RHO_REF_DIFF']),
+                                         cfg['LOG_EPS']))
+                Jd[:, j] = (lp - lb) / 1e-4
+            Jd *= inv_w[:, None]
+        else:
+            Jd = analytic_jacobian(theta, t_g, z_centers, cfg['RHO_REF_DIFF'], inv_w)
+        Dm = np.zeros((n_l - 1, n_l))
+        Dm[np.arange(n_l - 1), np.arange(n_l - 1)] = -np.sqrt(cfg['LAMBDA_SMOOTH'])
+        Dm[np.arange(n_l - 1), np.arange(1, n_l)] = np.sqrt(cfg['LAMBDA_SMOOTH'])
+        return np.vstack([Jd, Dm])
+
     res = least_squares(
-        resid, theta_init,
+        resid, theta_init, jac=jac,
         bounds=(np.full(n_l, log_b_lo), np.full(n_l, log_b_hi)),
         method=cfg['METHOD'], max_nfev=cfg['MAX_NFEV'], x_scale='jac',
     )
@@ -188,14 +252,28 @@ def invert_line(line_tag: str, out_root: Path,
     return {'stations': len(stations), 'depth_max': float(z_c[-1]), 'rmse_median_log': rmse_med}
 
 
+def _invert_line_worker(line_tag: str, out_root: str, user_cfg: Optional[dict]):
+    """子进程入口: 单条测线 1D 反演, 日志随结果返回 (spawn 可 pickle)。"""
+    logs: list[str] = []
+    try:
+        st = invert_line(line_tag, Path(out_root), user_cfg, logs.append)
+        return line_tag, st, logs
+    except Exception as e:
+        import traceback
+        logs.append(f'  ✗ {line_tag}: 异常: {e}\n{traceback.format_exc()}')
+        return line_tag, {'error': str(e)}, logs
+
+
 def run_all_inversions(out_root: str | Path, user_cfg: Optional[dict] = None,
-                       log_fn: Optional[Callable[[str], None]] = None) -> dict:
+                       log_fn: Optional[Callable[[str], None]] = None,
+                       n_line_jobs: int = 1) -> dict:
+    from .parallel_utils import map_lines
     log_fn = log_fn or (lambda s: print(s))
     out_root = Path(out_root)
     lines = sorted([p.name for p in out_root.iterdir() if p.is_dir() and
                     re.fullmatch(r'[1-5]线', p.name)])
-    log_fn(f'\n========== 启动 1D 反演  目标测线={lines} ==========')
-    res = {}
-    for lt in lines:
-        res[lt] = invert_line(lt, out_root, user_cfg, log_fn)
-    return res
+    log_fn(f'\n========== 启动 1D 反演  目标测线={lines} '
+          f'线级并行 n_line_jobs={n_line_jobs} ==========')
+    return map_lines(lines, _invert_line_worker,
+                     worker_args=(str(out_root), user_cfg),
+                     n_line_jobs=n_line_jobs, log_fn=log_fn, label='1D反演')

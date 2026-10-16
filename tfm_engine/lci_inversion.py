@@ -29,13 +29,13 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
 from scipy.optimize import least_squares
-from scipy.sparse import lil_matrix
+from scipy.sparse import lil_matrix, csr_matrix, block_diag, vstack as sp_vstack
 
 rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial']
 rcParams['axes.unicode_minus'] = False
 
 from .inversion import (parse_occam_dat, depth_layer_centers, forward_rhoa,
-                        DEFAULT_INV_CFG)
+                        DEFAULT_INV_CFG, analytic_jacobian)
 from .inv_algorithms import _weights, _data_resid, _numeric_jacobian
 
 DEFAULT_LCI_CFG = dict(
@@ -96,6 +96,51 @@ def _build_jac_sparsity(t_list, n_st: int, n_l: int) -> lil_matrix:
         sp[row:row + n_l, c_j:c_j + n_l] = 1
         row += n_l
     return sp
+
+
+def _build_global_jac_analytic(t_list, r_list, e_list, n_l, z_c, rho_ref,
+                               lam_s, lam_l, w_lat, R_depth, cfg):
+    """LCI 全局残差的**解析稀疏雅可比** (M_total, n_st*n_l)。
+
+    数据残差块: 每站块对角 = 插值权重矩阵 W_i·w_i (模型对 θ 线性, 精确)
+    纵向光滑块: sqrt(λs)·D1 块对角
+    横向约束块: sqrt(λl·w_i)·R_depth 与 −同, 相邻站两列块
+
+    与 θ 无关 → 整个迭代只需构造 1 次, 彻底消除 least_squares 的数值微分
+    (旧方案即使有着色稀疏结构仍需 ~n_l 次残差调用/迭代)。
+    """
+    n_st = len(t_list)
+    # --- 数据块 (CSR 块对角) ---
+    data_blocks = []
+    for i in range(n_st):
+        w_g = _weights(r_list[i], e_list[i], cfg['LOG_EPS'])
+        Jd_i = analytic_jacobian(None, t_list[i], z_c, rho_ref, w_g)
+        data_blocks.append(csr_matrix(Jd_i))
+    J_data = block_diag(data_blocks, format='csr')
+
+    # --- 纵向光滑块 ---
+    n_d = J_data.shape[1]
+    sm_rows = []
+    D1 = np.zeros((n_l - 1, n_l))
+    D1[np.arange(n_l - 1), np.arange(n_l - 1)] = -np.sqrt(lam_s)
+    D1[np.arange(n_l - 1), np.arange(1, n_l)] = np.sqrt(lam_s)
+    for i in range(n_st):
+        Ji = lil_matrix((n_l - 1, n_d))
+        Ji[:, i * n_l:(i + 1) * n_l] = D1
+        sm_rows.append(csr_matrix(Ji))
+    J_smooth = sp_vstack(sm_rows, format='csr')
+
+    # --- 横向约束块 ---
+    lat_rows = []
+    for i in range(n_st - 1):
+        Ji = lil_matrix((n_l, n_d))
+        B = np.sqrt(lam_l * w_lat[i]) * R_depth
+        Ji[:, i * n_l:(i + 1) * n_l] = B
+        Ji[:, (i + 1) * n_l:(i + 2) * n_l] = -B
+        lat_rows.append(csr_matrix(Ji))
+    J_lat = sp_vstack(lat_rows, format='csr') if lat_rows else csr_matrix((0, n_d))
+
+    return sp_vstack([J_data, J_smooth, J_lat], format='csr')
 
 
 def invert_line_lci(line_tag: str, out_root: str | Path,
@@ -223,6 +268,21 @@ def invert_line_lci(line_tag: str, out_root: str | Path,
     sp = _build_jac_sparsity(t_list, n_st, n_l)
     sp_csr = sp.tocsr()
 
+    # ---------- 解析全局雅可比 (常量, 一次构造; numeric 模式回退到稀疏着色差分) ----------
+    jac_mode = cfg.get('JAC_MODE', 'analytic')
+    if jac_mode == 'numeric':
+        jac_arg = '2-point'
+        log_fn('  [LCI] JAC_MODE=numeric (稀疏结构着色差分, 仅用于校验)')
+    else:
+        J_global = _build_global_jac_analytic(
+            t_list, r_list, e_list, n_l, z_c, rho_ref,
+            lam_s, lam_l, w_lat, R_depth, cfg)
+        # 形状自检, 与残差/稀疏结构严格一致
+        assert J_global.shape == sp_csr.shape, (J_global.shape, sp_csr.shape)
+        jac_arg = lambda thv: J_global
+        log_fn(f'  [LCI] 解析稀疏雅可比: shape={J_global.shape} '
+               f'nnz={J_global.nnz} (全迭代复用, 零数值微分)')
+
     # ---------- 联合反演 ----------
     nfev_data = {'nfev': 0}
 
@@ -235,11 +295,14 @@ def invert_line_lci(line_tag: str, out_root: str | Path,
     bounds_lo = np.full(n_st * n_l, lo)
     bounds_hi = np.full(n_st * n_l, hi)
 
-    res = least_squares(resid_wrapper, theta0,
-                        bounds=(bounds_lo, bounds_hi),
-                        method='trf', max_nfev=cfg['MAX_NFEV'],
-                        jac_sparsity=sp_csr, x_scale='jac',
-                        tr_solver='lsmr', verbose=0)
+    ls_kwargs = dict(bounds=(bounds_lo, bounds_hi),
+                     method='trf', max_nfev=cfg['MAX_NFEV'],
+                     x_scale='jac', tr_solver='lsmr', verbose=0)
+    if jac_mode == 'numeric':
+        ls_kwargs['jac_sparsity'] = sp_csr
+    else:
+        ls_kwargs['jac'] = jac_arg
+    res = least_squares(resid_wrapper, theta0, **ls_kwargs)
 
     theta_opt = np.clip(res.x, lo, hi).reshape(n_st, n_l)
     R_lin = 10.0 ** theta_opt
@@ -326,14 +389,37 @@ def invert_line_lci(line_tag: str, out_root: str | Path,
     }
 
 
+def _lci_line_worker(line_tag, out_root, user_cfg):
+    """子进程入口: 单线 LCI (热启动站内并行关闭, 防 CPU 超订)。"""
+    logs = []
+    try:
+        st = invert_line_lci(line_tag, out_root, user_cfg, n_jobs=1,
+                             log_fn=logs.append)
+        return line_tag, st, logs
+    except Exception as e:
+        import traceback
+        logs.append(f'  ✗ {line_tag}: 异常: {e}\n{traceback.format_exc()}')
+        return line_tag, {'error': str(e)}, logs
+
+
 def run_all_lci(out_root: str | Path,
                 user_cfg: Optional[dict] = None,
                 n_jobs: int = 1,
+                n_line_jobs: int = 1,
                 log_fn: Optional[Callable[[str], None]] = None) -> dict:
+    from .parallel_utils import map_lines, auto_line_jobs
     log_fn = log_fn or (lambda s: print(s))
     out_root = Path(out_root)
     lines = sorted([p.name for p in out_root.iterdir() if p.is_dir()
                     and re.fullmatch(r'[1-5]线', p.name)])
-    log_fn(f'\n========== LCI 横向约束反演  测线={lines} ==========')
+    log_fn(f'\n========== LCI 横向约束反演  测线={lines} '
+          f'热启动n_jobs={n_jobs} 线级n_line_jobs={n_line_jobs} ==========')
+    if n_line_jobs in (None, 0):
+        n_line_jobs = auto_line_jobs(len(lines))
+    if n_line_jobs > 1 and len(lines) > 1:
+        return map_lines(lines, _lci_line_worker,
+                         worker_args=(str(out_root), user_cfg),
+                         n_line_jobs=n_line_jobs, log_fn=log_fn,
+                         label='LCI联合反演')
     return {lt: invert_line_lci(lt, out_root, user_cfg, n_jobs, log_fn)
             for lt in lines}

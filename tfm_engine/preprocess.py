@@ -4,7 +4,7 @@ preprocess.py — 四阶段预处理流水线 (完整重新实现, 权威 Excel 
 ======================================================================
 阶段 1 Inventory  : project_root → 每条测线 Excel 解析 + section 目录枚举 + DAT 文件绑定
 阶段 2 Load       : 按 Excel 映射链逐 DAT 读取 (auto_truncate_if_mismatch)
-阶段 3 Cube Align : 关键! 对 每 section(=大写档 TXCAL01) 下 3 台仪器 × 每仪器 Np=5 →
+阶段 3 Cube Align : 关键! 对 每 section(=大写档 CXXST01) 下 3 台仪器 × 每仪器 Np=5 →
                     映射到 Excel「接收对应点位」的 station 集合, 合并成 16 条 station_cube.
                     合并策略: 同一 station 多仪器/多通道 → 按通道加权平均 (Hx优先).
 阶段 4 ADC + ρa + QC + Export:
@@ -16,6 +16,7 @@ preprocess.py — 四阶段预处理流水线 (完整重新实现, 权威 Excel 
 """
 from __future__ import annotations
 import json, re
+import traceback
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
@@ -31,7 +32,7 @@ rcParams['font.sans-serif'] = ['Microsoft YaHei','SimHei','Arial']
 rcParams['axes.unicode_minus'] = False
 
 # 本地模块
-from .dat_parser import load_tem_dat, PER_CHANNEL, auto_truncate_if_mismatch, WlfDatData, WlfDatHeader
+from .dat_parser import load_wlf_dat, PER_CHANNEL, auto_truncate_if_mismatch, WlfDatData, WlfDatHeader
 from .excel_meta import parse_em_xlsx, LINE_NAME_TO_CODE, LINE_CODE_TO_NAME
 from .coord_loader import load_authoritative_coordinates
 
@@ -79,7 +80,7 @@ def run_inventory(project_root: Path, log_fn: Callable[[str], None]) -> dict:
     """project_root = myfile/.  扫描 4 个 X线 子目录, 读 Excel + 列举 section 子目录.
     返回结构:
       {'line_tag' → {'meta': <parse_em_xlsx>, 'sections_disk': {section_key → {instrument → Path(dat_on_disk),
-                                                                               tx_dat → Path(TXCAL01)}}}}
+                                                                               tx_dat → Path(CXXST01)}}}}
     """
     lines_dirs = [p for p in project_root.iterdir() if p.is_dir()
                   and re.fullmatch(r'[1-5]线', p.name)]
@@ -100,7 +101,7 @@ def run_inventory(project_root: Path, log_fn: Callable[[str], None]) -> dict:
             for f in sd.iterdir():
                 if not f.suffix.lower() == '.dat': continue
                 name = f.name
-                if name.upper() == name:          # 全大写 = 发射电流档 (TXCAL01)
+                if name.upper() == name:          # 全大写 = 发射电流档 (CXXST01)
                     tx_dat = f
                 else:                              # 全小写 = 接收档
                     m = re.match(r'^c(\d{3})st(\d{3})\.dat', name.lower())
@@ -189,7 +190,7 @@ def process_one_line(line_tag: str, inv: dict, cfg: dict, out_dir: Path,
         for inst in ('001', '002', '003'):
             if inst not in recv_dats: continue
             try:
-                wd = load_tem_dat(recv_dats[inst], log_fn=log_fn, validate=True, strict_per_ch=False)
+                wd = load_wlf_dat(recv_dats[inst], log_fn=log_fn, validate=True, strict_per_ch=False)
             except Exception as e:
                 log_fn(f'  [WARN] 读取 {sec}/{inst} 失败: {e}')
                 continue
@@ -211,7 +212,7 @@ def process_one_line(line_tag: str, inv: dict, cfg: dict, out_dir: Path,
     # 25 gates: cutoff_idx → PER_CH-1, geomspace (对数等比)
     idx_gates = np.geomspace(cutoff_idx, PER_CH - 1, num=cfg['TEM_N_GATES'], endpoint=True).astype(np.int64)
     idx_gates = np.unique(idx_gates)
-    # 时间轴: 映射到 t∈[2μs, 20ms] 对数 (实际 TEM 时钟未标定, 用相对 gates)
+    # 时间轴: 映射到 t∈[2μs, 20ms] 对数 (实际 WLF 时钟未标定, 用相对 gates)
     t_us = np.geomspace(cfg['T_MIN_US'], cfg['T_MAX_US'], num=len(idx_gates))
     t_s = t_us * 1e-6
 
@@ -405,13 +406,34 @@ def process_one_line(line_tag: str, inv: dict, cfg: dict, out_dir: Path,
 
 
 # ============================================================
+# 多测线并行 worker (模块顶层, spawn 可 pickle)
+# ============================================================
+def _preprocess_line_worker(line_tag: str, inv: dict, cfg: dict, out_root: str):
+    """子进程入口: 处理单条测线, 捕获日志随结果返回。"""
+    logs: list[str] = []
+    try:
+        st = process_one_line(line_tag, inv, cfg, Path(out_root), logs.append)
+        logs.append(f'  ✓ {line_tag}: stations(qc_pass/total)='
+                    f'{st["stations_qc_pass"]}/{st["stations_total"]} '
+                    f'ρa_median={st["rhoa_median_all"]:.2e} Ω·m '
+                    f'Occam_rows={st["occam_rows"]}')
+        return line_tag, st, logs
+    except Exception as e:
+        logs.append(f'  ✗ {line_tag}: 异常: {e}\n{traceback.format_exc()}')
+        return line_tag, {'error': str(e)}, logs
+
+
+# ============================================================
 # 主入口
 # ============================================================
 def run_full_preprocess(project_root: str | Path, out_root: str | Path,
                         user_cfg: Optional[dict] = None,
-                        log_fn: Optional[Callable[[str], None]] = None) -> dict:
+                        log_fn: Optional[Callable[[str], None]] = None,
+                        n_line_jobs: int = 1) -> dict:
     """完整 4 阶段. project_root = D:/MyProject/myfile/
-    返回 summary dict. log_fn 用于 GUI 文本框回显."""
+    返回 summary dict. log_fn 用于 GUI 文本框回显.
+    n_line_jobs>1 时按测线多进程并行 (预处理阶段推荐)。"""
+    from .parallel_utils import map_lines
     project_root = Path(project_root); out_root = Path(out_root)
     out_root.mkdir(parents=True, exist_ok=True)
     log_fn = log_fn or (lambda s: print(s))
@@ -423,23 +445,29 @@ def run_full_preprocess(project_root: str | Path, out_root: str | Path,
 
     log_fn(f'{"="*80}\n  TEM 预处理启动 @ {ts}\n'
           f'  项目根: {project_root}\n  输出根: {out_root}\n'
-          f'  参数快照: {cfg_path}\n{"="*80}')
+          f'  参数快照: {cfg_path}\n  测线并行: n_line_jobs={n_line_jobs}\n{"="*80}')
 
+    # Inventory 只扫描一次 (轻量元数据), 各子进程共享同一份快照
     inv = run_inventory(project_root, log_fn)
     line_tags = sorted(inv['lines'].keys())
-    summary = {}
-    for lt in line_tags:
-        log_fn(f'\n{"█"*60}\n  处理测线: {lt}\n{"█"*60}')
-        try:
-            st = process_one_line(lt, inv, cfg, out_root, log_fn)
+
+    if n_line_jobs in (None, 0):
+        from .parallel_utils import auto_line_jobs
+        n_line_jobs = auto_line_jobs(len(line_tags))
+
+    if n_line_jobs > 1 and len(line_tags) > 1:
+        summary = map_lines(line_tags, _preprocess_line_worker,
+                            worker_args=(inv, cfg, str(out_root)),
+                            n_line_jobs=n_line_jobs, log_fn=log_fn,
+                            label='预处理')
+    else:
+        summary = {}
+        for lt in line_tags:
+            log_fn(f'\n{"█"*60}\n  处理测线: {lt}\n{"█"*60}')
+            _, st, logs = _preprocess_line_worker(lt, inv, cfg, str(out_root))
+            for line in logs:
+                log_fn(line)
             summary[lt] = st
-            log_fn(f'  ✓ {lt}: stations(qc_pass/total)={st["stations_qc_pass"]}/{st["stations_total"]}'
-                  f'  ρa_median={st["rhoa_median_all"]:.2e} Ω·m  Occam_rows={st["occam_rows"]}')
-        except Exception as e:
-            import traceback
-            tb = traceback.format_exc()
-            log_fn(f'  ✗ {lt}: 异常: {e}\n{tb}')
-            summary[lt] = {'error': str(e)}
     log_fn(f'\n{"="*80}\n  SUMMARY\n{"="*80}')
     for lt, st in summary.items():
         log_fn(f'  {lt}: {st}')

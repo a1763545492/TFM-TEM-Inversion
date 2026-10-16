@@ -8,11 +8,11 @@ Sheet 契约 (已实锤 1/2/5线):
   1.「接收对应点位」: 列=[日期, 排列, 点号=Sx-N, 通道=1/2/3, 仪器号=001/002/003, 备注]
      ffill 语义: 日期/排列/点号仅在首行出现, 后续 NaN 行从上一行 carry. 通道=非空行 为有效行.
      3 台仪器 × 每个排列各占 6 行 (3 通道 × 5 滚动采样 = 对应 station_code 排列覆盖).
-  2.「发射对应关系」: 3 行 (表头, 排列1, 排列2).  列 2=大写档文件名(TXCAL01), 列 4..6=3 台仪器接收文件名
+  2.「发射对应关系」: 3 行 (表头, 排列1, 排列2).  列 2=大写档文件名(CXXST01), 列 4..6=3 台仪器接收文件名
      接收文件名原始是 `001_YYMMDDHHMMSS` 时间戳, 但实际目录里已统一重命名为
      `c[section]st001.dat` / `c[section]st002.dat` / `c[section]st003.dat` —
      用 "仪器号末尾 1 位" 作为索引匹配.
-  3.「发射时间」: 列 = [文件名=TXCAL01, 发射日期, 开始时间, 结束时间, 电流大小="30A"]
+  3.「发射时间」: 列 = [文件名=CXXST01, 发射日期, 开始时间, 结束时间, 电流大小="30A"]
      提取 电流大小 I_tx = float.  ★ 权威, 不用 fallback.
   4.「坐标」: 列 = [仪器号, 线号=S1/S2/S4/S5, 点号=N, 磁棒号(如 4238/1619/1618), A2(发射源对角), B2(发射源对角)]
      用于 仪器+点号 → 磁棒号 映射; 也给出 A2/B2 坐标 (5线 这里给出 A1/B1 坐标)
@@ -124,10 +124,10 @@ def parse_em_xlsx(line_dir: Path, log_fn: Callable[[str], None] = None) -> dict:
         # order_val 不再依赖 Excel「排列」列; 直接用行序.
         order_val = seq_idx
         tx_file = str(r.iloc[2]).strip()
-        # 解析 section = TXCAL01 → XX.  大写规则: C17 → 017
+        # 解析 section = CXXST01 → XX.  大写规则: C17 → 017
         m = re.match(r'^[cC](\d{2,4})[sS][tT]', tx_file)
         if not m:
-            log_fn(f'  [WARN] 发射文件名 {tx_file} 不匹配 TXCAL01, 跳过')
+            log_fn(f'  [WARN] 发射文件名 {tx_file} 不匹配 CXXST01, 跳过')
             seq_idx -= 1
             continue
         section_key = m.group(1).zfill(3)  # 17 → 017

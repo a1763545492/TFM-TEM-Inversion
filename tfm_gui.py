@@ -46,12 +46,13 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 _HERE = Path(__file__).resolve().parent
 if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
-from tfm_engine.preprocess import run_full_preprocess
+from tfm_engine.preprocess import run_full_preprocess, run_inventory, process_one_line
 from tfm_engine.inversion import run_all_inversions
 from tfm_engine.inv_algorithms import (run_all_algo, run_all_algos_compare,
-                                       ALGO_CHOICES)
-from tfm_engine.adv_inversion import run_all_advanced, ALGO_ADVANCED
-from tfm_engine.lci_inversion import run_all_lci
+                                       ALGO_CHOICES, invert_line_algo)
+from tfm_engine.adv_inversion import run_all_advanced, ALGO_ADVANCED, invert_line_advanced
+from tfm_engine.lci_inversion import run_all_lci, invert_line_lci
+from tfm_engine.dl_inversion import run_all_dl, invert_line_dl
 from tfm_engine.current_proc import run_all_current
 from tfm_engine.occam_bridge import materialize_all
 from tfm_engine.forward import (LayeredModel, tem_forward_1d,
@@ -71,6 +72,9 @@ from tfm_engine.denoise_ae import DenoisingAutoencoder
 from tfm_engine.viz_3d import (plot_2d_section_enhanced, plot_section_comparison,
                                export_3d_volume_html, export_section_interactive)
 from tfm_engine.project_db import ProjectDB, create_project_db
+from tfm_engine.model_compare import compare_all_lines, ALGO_LABELS, compare_line
+from tfm_engine.report_gen import generate_report
+from tfm_engine.export_formats import export_line
 
 
 # =====================================================================
@@ -117,6 +121,8 @@ class TFMMainApp:
         self.tab_adv   = ttk.Frame(self.nb);        self.nb.add(self.tab_adv,   text=" ⑧ Advanced ")
         self.tab_ai    = ttk.Frame(self.nb);        self.nb.add(self.tab_ai,    text=" ⑨ AI & Viz ")
         self.tab_proj  = ttk.Frame(self.nb);        self.nb.add(self.tab_proj,  text=" ⑩ Project DB ")
+        self.tab_cmp   = ttk.Frame(self.nb);        self.nb.add(self.tab_cmp,   text=" ⑪ Compare QC ")
+        self.tab_batch = ttk.Frame(self.nb);        self.nb.add(self.tab_batch,text=" ⑫ Batch Queue ")
 
         self._build_tab_basic()
         self._build_tab_model()
@@ -128,6 +134,13 @@ class TFMMainApp:
         self._build_tab_advanced()
         self._build_tab_ai_viz()
         self._build_tab_project()
+        self._build_tab_compare()
+        self._build_tab_batch()
+
+        # 批量队列状态
+        self._batch_jobs: list[dict] = []
+        self._batch_running = False
+        self._batch_inv: Optional[dict] = None
 
         # ---------- 底部状态栏（路径 + 日志滚动） ----------
         status = ttk.LabelFrame(root, text="运行日志 (实时同步至磁盘 gui_*.log)")
@@ -247,7 +260,7 @@ class TFMMainApp:
         ttk.Combobox(lf_hp, textvariable=self.var_inv_algo, width=18, state="readonly",
                      values=["trf", "lm", "occam",
                              "occam_adaptive", "lm_adaptive", "cgls", "mcmc",
-                             "lci", "all(三算法对比)"]
+                             "lci", "dl", "all(三算法对比)"]
                      ).grid(row=3, column=1, padx=3, pady=3, sticky="w")
 
         # --- 高级反演参数 (occam_adaptive / lm_adaptive / cgls / mcmc) ---
@@ -365,8 +378,11 @@ class TFMMainApp:
                                       n_jobs=n_jobs, use_cache=use_cache, log_fn=log)
             elif algo == 'lci':
                 lam_lat = inv_cfg.get('LAMBDA_LAT', 1.0)
-                log(f">>> Step3 LCI 横向约束联合反演 [λ_lat={lam_lat}]  n_jobs={n_jobs}")
+                log_fn(f">>> Step3 LCI 横向约束联合反演 [λ_lat={lam_lat}]  n_jobs={n_jobs}")
                 run_all_lci(out, user_cfg=inv_cfg, n_jobs=n_jobs, log_fn=log)
+            elif algo == 'dl':
+                log_fn(">>> Step3 DL 端到端反演 (U-Net/线性降级, 首次自动训练)")
+                run_all_dl(out, n_layers=inv_cfg.get('N_LAYERS', 25), log_fn=log)
             elif algo in ALGO_ADVANCED:
                 log(f">>> Step3 1D 高级电阻率反演 [algo={algo}]  "
                     f"n_jobs={n_jobs} cache={use_cache} mcmc_samples={mcmc_samples}")
@@ -1447,6 +1463,414 @@ class TFMMainApp:
         for inv in invs[:5]:
             self.txt_proj.insert("end", f"  {inv['algorithm']}: RMSE={inv['rmse_mean']:.3f} @ {inv['created_at']}\n")
         self.txt_proj.see("end")
+
+    # =================================================================
+    # TAB 11: Compare QC (多算法对比仪表盘)
+    # =================================================================
+    def _build_tab_compare(self):
+        p = self.tab_cmp
+        lf = ttk.LabelFrame(p, text="多算法反演结果对比 (断面并排 + 逐站拟合 + RMSE 统计)")
+        lf.pack(fill="x", padx=6, pady=4)
+
+        f = ttk.Frame(lf); f.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f, text="输出根目录:").pack(side="left")
+        ttk.Entry(f, textvariable=self.var_out, width=52).pack(side="left", padx=2)
+        ttk.Button(f, text="…", width=3,
+                   command=lambda: self.var_out.set(
+                       filedialog.askdirectory(initialdir=self.var_out.get()))).pack(side="left")
+
+        f2 = ttk.Frame(lf); f2.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f2, text="测线(空=1~5全线):").pack(side="left")
+        self.var_cmp_lines = tk.StringVar()
+        ttk.Entry(f2, textvariable=self.var_cmp_lines, width=14).pack(side="left", padx=2)
+        ttk.Label(f2, text="  算法:").pack(side="left")
+        self.var_cmp_algos = {}
+        for algo, label in ALGO_LABELS.items():
+            v = tk.BooleanVar(value=True)
+            self.var_cmp_algos[algo] = v
+            ttk.Checkbutton(f2, text=label, variable=v).pack(side="left", padx=2)
+        ttk.Button(f2, text="▶ 生成对比", command=self._on_compare_run).pack(side="left", padx=8)
+
+        # 成果打开
+        f3 = ttk.Frame(lf); f3.pack(fill="x", padx=4, pady=2)
+        ttk.Label(f3, text="查看测线:").pack(side="left")
+        self.cmb_cmp_line = ttk.Combobox(f3, width=6, state="readonly")
+        self.cmb_cmp_line.pack(side="left", padx=2)
+        ttk.Button(f3, text="断面图", command=lambda: self._open_cmp_artifact("sections")).pack(side="left", padx=3)
+        ttk.Button(f3, text="拟合曲线", command=lambda: self._open_cmp_artifact("fits")).pack(side="left", padx=3)
+        ttk.Button(f3, text="RMSE曲线", command=lambda: self._open_cmp_artifact("rmse")).pack(side="left", padx=3)
+        ttk.Button(f3, text="统计表", command=lambda: self._open_cmp_artifact("stats")).pack(side="left", padx=3)
+        ttk.Button(f3, text="打开目录", command=self._open_cmp_dir).pack(side="left", padx=3)
+        ttk.Button(f3, text="📄 一键HTML报告", command=self._on_gen_report).pack(side="left", padx=12)
+        self._cmp_artifacts: dict[str, dict] = {}
+
+        # 统计表
+        cols = ("line", "algo", "stations", "rmse_med", "rmse_mean",
+                "success", "rho_min", "rho_max")
+        headers = ("测线", "算法", "站数", "RMSE中位", "RMSE均值",
+                   "成功率", "ρmin中位", "ρmax中位")
+        widths = (70, 130, 60, 90, 90, 70, 100, 100)
+        lf_t = ttk.LabelFrame(p, text="QC 统计表 (按 RMSE 中位排序)")
+        lf_t.pack(fill="both", expand=True, padx=6, pady=4)
+        self.tree_cmp = ttk.Treeview(lf_t, columns=cols, show="headings", height=12)
+        for c, h, w in zip(cols, headers, widths):
+            self.tree_cmp.heading(c, text=h)
+            self.tree_cmp.column(c, width=w, anchor="center")
+        vsb = ttk.Scrollbar(lf_t, orient="vertical", command=self.tree_cmp.yview)
+        self.tree_cmp.configure(yscrollcommand=vsb.set)
+        self.tree_cmp.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+    def _on_compare_run(self):
+        out_root = self.var_out.get()
+        if not out_root or not Path(out_root).is_dir():
+            messagebox.showerror("错误", "输出根目录不存在"); return
+        sel = [a for a, v in self.var_cmp_algos.items() if v.get()]
+        lines_txt = self.var_cmp_lines.get().strip()
+        self._start_worker(self._worker_compare, out_root, sel, lines_txt)
+
+    def _worker_compare(self, out_root, algos, lines_txt):
+        log = self.log
+        kwargs = {"algos": algos or None, "log_fn": log}
+        per_line = compare_all_lines(out_root, **kwargs)
+        # 过滤指定测线
+        if lines_txt:
+            want = {f"{x.strip()}线" if not x.strip().endswith("线") else x.strip()
+                    for x in lines_txt.replace("，", ",").split(",") if x.strip()}
+            per_line = {k: v for k, v in per_line.items() if k in want}
+        # 记录成果路径
+        art = {}
+        rows = []
+        for lt, stats_rows in per_line.items():
+            base = Path(out_root) / lt
+            art[lt] = {
+                "sections": base / f"{lt}_compare_sections.png",
+                "fits": base / f"{lt}_compare_fits.png",
+                "rmse": base / f"{lt}_compare_rmse.png",
+                "stats": base / f"{lt}_compare_stats.csv",
+            }
+            for r in stats_rows:
+                rows.append((lt, r.get("label", r.get("algo")),
+                             r.get("stations"), r.get("rmse_median_log"),
+                             r.get("rmse_mean_log"), r.get("success_rate"),
+                             r.get("rho_min_med"), r.get("rho_max_med")))
+
+        def _update_ui():
+            self._cmp_artifacts = art
+            self.cmb_cmp_line["values"] = list(art.keys())
+            if art and not self.cmb_cmp_line.get():
+                self.cmb_cmp_line.current(0)
+            self.tree_cmp.delete(*self.tree_cmp.get_children())
+            for row in rows:
+                lt, algo, ns, rm, rmean, sr, rlo, rhi = row
+                self.tree_cmp.insert("", "end", values=(
+                    lt, algo, ns if ns is not None else "",
+                    f"{rm:.4f}" if isinstance(rm, (int, float)) and rm == rm else "",
+                    f"{rmean:.4f}" if isinstance(rmean, (int, float)) and rmean == rmean else "",
+                    f"{sr*100:.0f}%" if isinstance(sr, (int, float)) and sr == sr else "",
+                    f"{rlo:.1f}" if isinstance(rlo, (int, float)) else "",
+                    f"{rhi:.1f}" if isinstance(rhi, (int, float)) else ""))
+        self.root.after(0, _update_ui)
+        log(f"[Compare] 完成 {len(art)} 条测线对比")
+
+    def _open_cmp_artifact(self, kind):
+        lt = self.cmb_cmp_line.get()
+        if not lt or lt not in self._cmp_artifacts:
+            messagebox.showinfo("提示", "请先生成对比并选择测线"); return
+        p = self._cmp_artifacts[lt].get(kind)
+        if p and Path(p).is_file():
+            os.startfile(str(p))
+        else:
+            messagebox.showinfo("提示", f"成果不存在: {p}")
+
+    def _open_cmp_dir(self):
+        lt = self.cmb_cmp_line.get()
+        if lt:
+            d = Path(self.var_out.get()) / lt
+            if d.is_dir():
+                os.startfile(str(d)); return
+        out_root = self.var_out.get()
+        if Path(out_root).is_dir():
+            os.startfile(out_root)
+
+    def _on_gen_report(self):
+        out_root = self.var_out.get()
+        if not out_root or not Path(out_root).is_dir():
+            messagebox.showerror("错误", "输出根目录不存在"); return
+        self._start_worker(self._worker_gen_report, out_root)
+
+    def _worker_gen_report(self, out_root):
+        p = generate_report(out_root, log_fn=self.log)
+        self.log(f"[报告] 完成: {p}")
+        try:
+            os.startfile(str(p))
+        except Exception:
+            pass
+
+    # =================================================================
+    # TAB 12: Batch Queue (多测线排队执行, 后台线程不阻塞 UI)
+    # =================================================================
+    def _build_tab_batch(self):
+        p = self.tab_batch
+        # --- 路径 (共享 Basic 页变量) ---
+        lf0 = ttk.LabelFrame(p, text="① 路径 (与 ①Basic Pipeline 页共享)")
+        lf0.pack(fill="x", padx=6, pady=4)
+        ttk.Label(lf0, text="项目根:").grid(row=0, column=0, sticky="w", padx=4, pady=2)
+        ttk.Entry(lf0, textvariable=self.var_project, width=70).grid(row=0, column=1, padx=4)
+        ttk.Button(lf0, text="浏览…", command=self._browse_project).grid(row=0, column=2, padx=4)
+        ttk.Label(lf0, text="输出根:").grid(row=1, column=0, sticky="w", padx=4, pady=2)
+        ttk.Entry(lf0, textvariable=self.var_out, width=70).grid(row=1, column=1, padx=4)
+        ttk.Button(lf0, text="浏览…", command=self._browse_out).grid(row=1, column=2, padx=4)
+
+        # --- 测线 ---
+        lf1 = ttk.LabelFrame(p, text="② 测线选择")
+        lf1.pack(fill="x", padx=6, pady=4)
+        self.var_bline = {}
+        for i, tag in enumerate(['1线', '2线', '3线', '4线', '5线']):
+            v = tk.BooleanVar(value=True)
+            self.var_bline[tag] = v
+            ttk.Checkbutton(lf1, text=tag, variable=v).grid(row=0, column=i, padx=8, pady=4)
+
+        def toggle_all():
+            val = self.var_b_all.get()
+            for vv in self.var_bline.values():
+                vv.set(val)
+        self.var_b_all = tk.BooleanVar(value=True)
+        ttk.Checkbutton(lf1, text="全选", variable=self.var_b_all,
+                        command=toggle_all).grid(row=0, column=5, padx=12)
+
+        # --- 阶段 ---
+        lf2 = ttk.LabelFrame(p, text="③ 执行阶段 (按测线顺序排队: 预处理→反演→对比→导出, 报告最后)")
+        lf2.pack(fill="x", padx=6, pady=4)
+        self.var_b_pre = tk.BooleanVar(value=True)
+        self.var_b_inv = tk.BooleanVar(value=True)
+        self.var_b_cmp = tk.BooleanVar(value=False)
+        self.var_b_exp = tk.BooleanVar(value=False)
+        self.var_b_rep = tk.BooleanVar(value=False)
+        ttk.Checkbutton(lf2, text="预处理", variable=self.var_b_pre).grid(
+            row=0, column=0, padx=6, pady=4, sticky="w")
+        ttk.Checkbutton(lf2, text="反演", variable=self.var_b_inv).grid(
+            row=0, column=1, padx=4, sticky="w")
+        self.var_b_inv_algo = tk.StringVar(value="trf")
+        ttk.Combobox(lf2, textvariable=self.var_b_inv_algo, width=15, state="readonly",
+                     values=['trf', 'lm', 'occam', 'occam_adaptive', 'lm_adaptive',
+                             'cgls', 'mcmc', 'lci', 'dl']).grid(row=0, column=2, padx=4)
+        ttk.Checkbutton(lf2, text="多算法对比QC", variable=self.var_b_cmp).grid(
+            row=0, column=3, padx=6)
+        ttk.Checkbutton(lf2, text="标准化导出", variable=self.var_b_exp).grid(
+            row=1, column=0, padx=6, pady=4, sticky="w")
+        self.var_b_fmt = {f: tk.BooleanVar(value=(f != 'geotiff'))
+                          for f in ('csv', 'xyz', 'grd', 'geotiff')}
+        for j, (f, v) in enumerate(self.var_b_fmt.items()):
+            ttk.Checkbutton(lf2, text=f.upper(), variable=v, width=7).grid(
+                row=1, column=1 + j, sticky="w")
+        ttk.Checkbutton(lf2, text="完成后生成HTML报告", variable=self.var_b_rep).grid(
+            row=2, column=0, columnspan=3, padx=6, pady=4, sticky="w")
+
+        # --- 队列操作 ---
+        lf3 = ttk.Frame(p)
+        lf3.pack(fill="x", padx=6, pady=4)
+        self.btn_bq_add = ttk.Button(lf3, text="＋ 加入队列", command=self._on_batch_enqueue)
+        self.btn_bq_add.pack(side="left", padx=4)
+        self.btn_bq_run = ttk.Button(lf3, text="▶ 开始执行", command=self._on_batch_start)
+        self.btn_bq_run.pack(side="left", padx=4)
+        ttk.Button(lf3, text="清空排队", command=self._on_batch_clear).pack(side="left", padx=4)
+        ttk.Button(lf3, text="打开输出目录", command=self._open_out).pack(side="left", padx=4)
+        self.var_bq_status = tk.StringVar(value="空闲 ｜ 队列 0")
+        ttk.Label(lf3, textvariable=self.var_bq_status).pack(side="right", padx=8)
+        self.pb_batch = ttk.Progressbar(p, mode="determinate")
+        self.pb_batch.pack(fill="x", padx=8, pady=2)
+
+        # --- 队列表 ---
+        lf4 = ttk.LabelFrame(p, text="任务队列")
+        lf4.pack(fill="both", expand=True, padx=6, pady=4)
+        cols = ("idx", "line", "stage", "algo", "status", "elapsed", "note")
+        heads = ("#", "测线", "阶段", "算法", "状态", "耗时(s)", "备注")
+        widths = (40, 60, 130, 110, 70, 80, 300)
+        self.tv_batch = ttk.Treeview(lf4, columns=cols, show="headings", height=10)
+        for c, h, w in zip(cols, heads, widths):
+            self.tv_batch.heading(c, text=h)
+            self.tv_batch.column(c, width=w, anchor="center")
+        self.tv_batch.tag_configure("排队", foreground="#666")
+        self.tv_batch.tag_configure("运行", foreground="#1a5fb4")
+        self.tv_batch.tag_configure("完成", foreground="#1b7a32")
+        self.tv_batch.tag_configure("失败", foreground="#c01c28")
+        vs = ttk.Scrollbar(lf4, orient="vertical", command=self.tv_batch.yview)
+        self.tv_batch.configure(yscrollcommand=vs.set)
+        self.tv_batch.pack(side="left", fill="both", expand=True)
+        vs.pack(side="right", fill="y")
+
+    # ---- 队列: 派单 ----
+    def _batch_selected_lines(self) -> list[str]:
+        return [t for t, v in self.var_bline.items() if v.get()]
+
+    def _batch_ensure_inv(self, project: str) -> dict:
+        """预处理 inventory 只扫描一次, 各线任务共享。"""
+        if self._batch_inv is None:
+            self.log("[队列] 扫描项目 inventory ...")
+            self._batch_inv = run_inventory(Path(project), self.log)
+        return self._batch_inv
+
+    def _on_batch_enqueue(self):
+        project, out = self.var_project.get(), self.var_out.get()
+        lines = self._batch_selected_lines()
+        if not lines:
+            messagebox.showwarning("提示", "请至少选择一条测线"); return
+        if not out:
+            messagebox.showwarning("提示", "请填写输出根目录"); return
+        stages = []
+        if self.var_b_pre.get(): stages.append('pre')
+        if self.var_b_inv.get(): stages.append('inv')
+        if self.var_b_cmp.get(): stages.append('cmp')
+        if self.var_b_exp.get(): stages.append('exp')
+        if not stages and not self.var_b_rep.get():
+            messagebox.showwarning("提示", "请至少选择一个阶段"); return
+        if self.var_b_pre.get() and not Path(project).is_dir():
+            messagebox.showerror("错误", f"项目根目录不存在: {project}"); return
+        Path(out).mkdir(parents=True, exist_ok=True)
+
+        pp_cfg, inv_cfg = self._collect_cfg()
+        algo = self.var_b_inv_algo.get()
+        fmts = tuple(f for f, v in self.var_b_fmt.items() if v.get())
+        lam_init = float(self.var_hp_lam_i.get())
+        mcmc_n = int(self.var_mcmc_samples.get())
+
+        added = 0
+        for lt in lines:
+            for st in stages:
+                fn, algo_disp, stage_disp = self._batch_make_job(
+                    st, lt, project, out, pp_cfg, inv_cfg,
+                    algo, fmts, lam_init, mcmc_n)
+                self._batch_jobs.append({'line': lt, 'stage': stage_disp,
+                                         'algo': algo_disp, 'fn': fn,
+                                         'status': '排队'})
+                added += 1
+        if self.var_b_rep.get():
+            def report_job(log):
+                generate_report(out, log_fn=log)
+                return "HTML 已生成"
+            self._batch_jobs.append({'line': '—', 'stage': 'HTML报告',
+                                     'algo': '—', 'fn': report_job,
+                                     'status': '排队'})
+            added += 1
+        self._refresh_batch_tree()
+        self.log(f"[队列] 加入 {added} 个任务 (当前队列 {len(self._batch_jobs)})")
+
+    def _batch_make_job(self, st, lt, project, out, pp_cfg, inv_cfg,
+                        algo, fmts, lam_init, mcmc_n):
+        stage_names = {'pre': '预处理', 'inv': '反演',
+                       'cmp': '多算法对比QC', 'exp': '标准化导出'}
+        if st == 'pre':
+            def fn(log):
+                inv = self._batch_ensure_inv(project)
+                stt = process_one_line(lt, inv, pp_cfg, Path(out), log)
+                return (f"通过 {stt['stations_qc_pass']}/{stt['stations_total']} 站, "
+                        f"ρa中位 {stt['rhoa_median_all']:.1f} Ω·m")
+            return fn, '—', stage_names[st]
+        if st == 'inv':
+            def fn(log):
+                if algo == 'lci':
+                    r = invert_line_lci(lt, out, inv_cfg, n_jobs=1, log_fn=log)
+                elif algo == 'dl':
+                    r = invert_line_dl(lt, out, n_layers=inv_cfg.get('N_LAYERS', 25),
+                                       log_fn=log)
+                elif algo in ALGO_ADVANCED:
+                    r = invert_line_advanced(lt, out, algo, inv_cfg, n_jobs=1,
+                                             use_cache=False,
+                                             mcmc_samples=mcmc_n, log_fn=log)
+                else:
+                    r = invert_line_algo(lt, out, algo, inv_cfg,
+                                         {'LAMBDA_INIT': lam_init},
+                                         n_jobs=1, use_cache=False, log_fn=log)
+                if 'error' in r:
+                    raise RuntimeError(r['error'])
+                return f"完成 {r.get('stations', '?')} 站"
+            return fn, algo, stage_names[st]
+        if st == 'cmp':
+            def fn(log):
+                compare_line(out, lt, log_fn=log)
+                return "断面/拟合/RMSE 已生成"
+            return fn, '全部', stage_names[st]
+        if st == 'exp':
+            def fn(log):
+                r = export_line(out, lt, algo=algo if algo != 'lci' else 'lci',
+                                formats=fmts, log_fn=log)
+                n = len([v for v in r.values() if v])
+                return f"{n} 种格式已导出"
+            return fn, (algo if algo != 'lci' else 'lci'), stage_names[st]
+        raise ValueError(st)
+
+    # ---- 队列: 执行 ----
+    def _on_batch_start(self):
+        if self._batch_running:
+            return
+        pending = [j for j in self._batch_jobs if j['status'] == '排队']
+        if not pending:
+            messagebox.showinfo("提示", "队列中没有排队任务"); return
+        self._batch_running = True
+        self.btn_bq_run.configure(state="disabled")
+        self.btn_bq_add.configure(state="disabled")
+        self.pb_batch.configure(maximum=len(self._batch_jobs),
+                                value=len(self._batch_jobs) - len(pending))
+        threading.Thread(target=self._batch_runner, daemon=True).start()
+
+    def _batch_runner(self):
+        total = len(self._batch_jobs)
+        n_done = n_ok = n_fail = 0
+        self.log(f"[队列] 开始执行, 共 {total} 个任务")
+        i = 0
+        while i < len(self._batch_jobs):
+            job = self._batch_jobs[i]
+            if job['status'] == '排队':
+                job['status'] = '运行'
+                self.root.after(0, self._refresh_batch_tree)
+                self.log(f"[队列] ▶ {job['line']} · {job['stage']} · {job['algo']}")
+                t0 = time.time()
+                note, err = '', False
+                try:
+                    note = job['fn'](self.log) or ''
+                    job['status'] = '完成'; n_ok += 1
+                except Exception as exc:
+                    job['status'] = '失败'; n_fail += 1
+                    note = str(exc)[:120]
+                    self.log(f"[队列] ✗ {job['line']} {job['stage']} 失败: {exc}\n"
+                             f"{traceback.format_exc()}", level="E")
+                job['elapsed'] = round(time.time() - t0, 1)
+                job['note'] = note
+                n_done += 1
+                self.root.after(0, self._refresh_batch_tree)
+            i += 1
+        self._batch_running = False
+        self.root.after(0, lambda: self.btn_bq_run.configure(state="normal"))
+        self.root.after(0, lambda: self.btn_bq_add.configure(state="normal"))
+        self.log(f"[队列] 全部结束: 成功 {n_ok}, 失败 {n_fail}, 共 {n_done}")
+        self.root.after(0, lambda: messagebox.showinfo(
+            "批量任务完成", f"成功 {n_ok} 个\n失败 {n_fail} 个\n共执行 {n_done} 个"))
+
+    def _on_batch_clear(self):
+        if self._batch_running:
+            messagebox.showinfo("提示", "执行中请稍候, 结束后再清空"); return
+        self._batch_jobs = [j for j in self._batch_jobs if j['status'] != '排队']
+        self._refresh_batch_tree()
+
+    def _refresh_batch_tree(self):
+        self.tv_batch.delete(*self.tv_batch.get_children())
+        for idx, j in enumerate(self._batch_jobs, 1):
+            self.tv_batch.insert(
+                "", "end", iid=str(idx),
+                values=(idx, j['line'], j['stage'], j['algo'], j['status'],
+                        j.get('elapsed', ''), j.get('note', '')),
+                tags=(j['status'],))
+        total = len(self._batch_jobs)
+        done = total - sum(1 for j in self._batch_jobs if j['status'] == '排队')
+        self.pb_batch.configure(maximum=max(total, 1), value=done)
+        if self._batch_running:
+            txt = f"执行中 {done}/{total} ｜ 队列 {total}"
+        else:
+            ok = sum(1 for j in self._batch_jobs if j['status'] == '完成')
+            fail = sum(1 for j in self._batch_jobs if j['status'] == '失败')
+            txt = f"空闲 ｜ 队列 {total} ｜ 完成 {ok} ｜ 失败 {fail}"
+        self.var_bq_status.set(txt)
 
 
 def main():

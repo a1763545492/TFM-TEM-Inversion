@@ -2,7 +2,7 @@
 """
 tfm_engine.inv_algorithms (M9)
 ==============================
-1D 电阻率反演 多算法统一接口（对应 TEM 体系里可选的反演算法支路）:
+1D 电阻率反演 多算法统一接口（对应 WLF 体系里可选的反演算法支路）:
 
   algo='trf'   : scipy least_squares(TRF, bounds) — 现有 inversion.py 算法 (默认, 稳健)
   algo='lm'    : Levenberg-Marquardt (scipy method='lm') — 经典阻尼最小二乘, 无界(软裁剪)
@@ -37,7 +37,7 @@ rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial']
 rcParams['axes.unicode_minus'] = False
 
 from .inversion import (parse_occam_dat, depth_layer_centers, forward_rhoa,
-                        DEFAULT_INV_CFG, MU0)
+                        DEFAULT_INV_CFG, MU0, interp_weight_matrix, analytic_jacobian)
 
 ALGO_CHOICES = ('trf', 'lm', 'occam')
 
@@ -64,7 +64,7 @@ def _data_resid(theta: np.ndarray, t_g, r_g, w_g, z_c, rho_ref) -> np.ndarray:
 
 
 def _numeric_jacobian(theta, t_g, z_c, rho_ref, w_g, fd_step=1e-4) -> np.ndarray:
-    """d(log10 rhoa_pred * w)/dθ, 前向差分. (Ng, N)"""
+    """d(log10 rhoa_pred * w)/dθ, 前向差分. (Ng, N) — 仅用于解析雅可比校验/回退。"""
     base = forward_rhoa(theta, t_g, z_c, rho_ref)
     log_base = np.log10(np.maximum(base, 1e-3))
     J = np.zeros((t_g.size, theta.size))
@@ -75,6 +75,23 @@ def _numeric_jacobian(theta, t_g, z_c, rho_ref, w_g, fd_step=1e-4) -> np.ndarray
     return J * w_g[:, None]
 
 
+def _full_jacobian(theta, t_g, z_c, rho_ref, w_g, lam_smooth, mode='analytic'):
+    """完整残差 [数据残差; sqrt(λ)·一阶差分] 的雅可比 (Ng+N-1, N)。
+
+    analytic : 插值权重矩阵直接构造, 0 次额外正演 (模型对 θ 线性, 精确)
+    numeric  : 前向差分, N+1 次正演, 仅供梯度校验
+    """
+    n_l = theta.size
+    if mode == 'numeric':
+        Jd = _numeric_jacobian(theta, t_g, z_c, rho_ref, w_g)
+    else:
+        Jd = analytic_jacobian(theta, t_g, z_c, rho_ref, w_g)
+    Dm = np.zeros((n_l - 1, n_l))
+    Dm[np.arange(n_l - 1), np.arange(n_l - 1)] = -np.sqrt(lam_smooth)
+    Dm[np.arange(n_l - 1), np.arange(1, n_l)] = np.sqrt(lam_smooth)
+    return np.vstack([Jd, Dm])
+
+
 # ============================================================
 # 算法 1: TRF (委托给现有实现逻辑, 局部重写以保持算法间残差一致)
 # ============================================================
@@ -82,11 +99,18 @@ def _invert_trf(t_g, r_g, w_g, z_c, cfg) -> tuple[np.ndarray, dict]:
     n_l = z_c.size
     lo, hi = np.log10(cfg['RHO_BOUNDS'][0]), np.log10(cfg['RHO_BOUNDS'][1])
     th0 = np.full(n_l, np.log10(cfg['RHO_INIT']))
+    jac_mode = cfg.get('JAC_MODE', 'analytic')
 
     def resid(th):
         return np.concatenate([_data_resid(th, t_g, r_g, w_g, z_c, cfg['RHO_REF_DIFF']),
                                np.sqrt(cfg['LAMBDA_SMOOTH']) * np.diff(th)])
-    res = least_squares(resid, th0, bounds=(np.full(n_l, lo), np.full(n_l, hi)),
+
+    def jac(th):
+        return _full_jacobian(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g,
+                              cfg['LAMBDA_SMOOTH'], jac_mode)
+
+    res = least_squares(resid, th0, jac=jac,
+                        bounds=(np.full(n_l, lo), np.full(n_l, hi)),
                         method='trf', max_nfev=cfg['MAX_NFEV'], x_scale='jac')
     return res.x, {'success': bool(res.success), 'nfev': int(res.nfev), 'cost': float(res.cost)}
 
@@ -98,12 +122,19 @@ def _invert_lm(t_g, r_g, w_g, z_c, cfg) -> tuple[np.ndarray, dict]:
     n_l = z_c.size
     lo, hi = np.log10(cfg['RHO_BOUNDS'][0]), np.log10(cfg['RHO_BOUNDS'][1])
     th0 = np.full(n_l, np.log10(cfg['RHO_INIT']))
+    jac_mode = cfg.get('JAC_MODE', 'analytic')
 
     def resid(th):
         thc = np.clip(th, lo, hi)
         return np.concatenate([_data_resid(thc, t_g, r_g, w_g, z_c, cfg['RHO_REF_DIFF']),
                                np.sqrt(cfg['LAMBDA_SMOOTH']) * np.diff(thc)])
-    res = least_squares(resid, th0, method='lm', max_nfev=cfg['MAX_NFEV'] * 5)
+
+    def jac(th):
+        thc = np.clip(th, lo, hi)
+        return _full_jacobian(thc, t_g, z_c, cfg['RHO_REF_DIFF'], w_g,
+                              cfg['LAMBDA_SMOOTH'], jac_mode)
+
+    res = least_squares(resid, th0, jac=jac, method='lm', max_nfev=cfg['MAX_NFEV'] * 5)
     return np.clip(res.x, lo, hi), {'success': bool(res.success), 'nfev': int(res.nfev),
                                     'cost': float(res.cost)}
 
@@ -131,12 +162,17 @@ def _invert_occam(t_g, r_g, w_g, z_c, cfg, occfg) -> tuple[np.ndarray, dict]:
     chi2 = misfit(th)
     nfev = 1
     n_iter = 0
+    jac_mode = cfg.get('JAC_MODE', 'analytic')
     for it in range(int(occfg['MAX_ITER'])):
         n_iter = it + 1
         if abs(chi2 - target) < float(occfg['TOL_MISFIT']):
             break
-        Jw = _numeric_jacobian(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g)
-        nfev += n_l
+        if jac_mode == 'numeric':
+            Jw = _numeric_jacobian(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g)
+            nfev += n_l
+        else:
+            Jw = analytic_jacobian(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g)
+            nfev += 1
         r = _data_resid(th, t_g, r_g, w_g, z_c, cfg['RHO_REF_DIFF'])
         JtJ = Jw.T @ Jw
         Jtr = Jw.T @ r
@@ -319,15 +355,40 @@ def invert_line_algo(line_tag: str, out_root: str | Path, algo: str = 'trf',
     return {'stations': len(stations), 'rmse_median_log': rmse_med, 'algo': algo}
 
 
+def _algo_line_worker(line_tag, out_root, algo, user_cfg, occam_cfg, use_cache):
+    """子进程入口: 单线单算法 1D 反演 (站内并行关闭, 防 CPU 超订)。"""
+    logs = []
+    try:
+        st = invert_line_algo(line_tag, out_root, algo, user_cfg, occam_cfg,
+                              n_jobs=1, use_cache=use_cache, log_fn=logs.append)
+        return line_tag, st, logs
+    except Exception as e:
+        import traceback
+        logs.append(f'  ✗ {line_tag}: 异常: {e}\n{traceback.format_exc()}')
+        return line_tag, {'error': str(e)}, logs
+
+
 def run_all_algo(out_root: str | Path, algo: str = 'trf',
                  user_cfg: Optional[dict] = None, occam_cfg: Optional[dict] = None,
                  n_jobs: int = 1, use_cache: bool = False,
+                 n_line_jobs: int = 1,
                  log_fn: Optional[Callable[[str], None]] = None) -> dict:
+    from .parallel_utils import map_lines
     log_fn = log_fn or (lambda s: print(s))
     out_root = Path(out_root)
     lines = sorted([p.name for p in out_root.iterdir() if p.is_dir()
                     and re.fullmatch(r'[1-5]线', p.name)])
-    log_fn(f'\n========== 多算法 1D 反演  algo={algo}  测线={lines} ==========')
+    log_fn(f'\n========== 多算法 1D 反演  algo={algo}  测线={lines} '
+          f'站内n_jobs={n_jobs} 线级n_line_jobs={n_line_jobs} ==========')
+    if n_line_jobs in (None, 0):
+        from .parallel_utils import auto_line_jobs
+        n_line_jobs = auto_line_jobs(len(lines))
+    if n_line_jobs > 1 and len(lines) > 1:
+        return map_lines(lines, _algo_line_worker,
+                         worker_args=(str(out_root), algo, user_cfg,
+                                      occam_cfg, use_cache),
+                         n_line_jobs=n_line_jobs, log_fn=log_fn,
+                         label=f'1D反演[{algo}]')
     return {lt: invert_line_algo(lt, out_root, algo, user_cfg, occam_cfg,
                                  n_jobs, use_cache, log_fn)
             for lt in lines}
@@ -337,12 +398,14 @@ def run_all_algos_compare(out_root: str | Path, algos=('trf', 'lm', 'occam'),
                           user_cfg: Optional[dict] = None,
                           occam_cfg: Optional[dict] = None,
                           n_jobs: int = 1, use_cache: bool = False,
+                          n_line_jobs: int = 1,
                           log_fn: Optional[Callable[[str], None]] = None) -> dict:
     """跑全部算法 + 每线生成对比断面图 + 全线算法对比 CSV."""
     log_fn = log_fn or (lambda s: print(s))
     out_root = Path(out_root)
     results = {a: run_all_algo(out_root, a, user_cfg, occam_cfg,
-                               n_jobs, use_cache, log_fn) for a in algos}
+                               n_jobs, use_cache, n_line_jobs, log_fn)
+               for a in algos}
     comp_rows = []
     for lt in sorted({k for r in results.values() for k in r.keys()}):
         Rs, rmses = [], {}

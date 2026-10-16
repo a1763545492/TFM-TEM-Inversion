@@ -2,7 +2,7 @@
 """
 tfm_engine.ip_inversion (M4)
 ============================
-TEM 体系 1D TEM 激电 (IP/极化率) 反演（完全按 标准IP做法.m / IP反演.m 设计）：
+WLF 体系 1D TEM 激电 (IP/极化率) 反演（完全按 pcvogoss_pc.m / winrpcr_kru.m 设计）：
   模型参数：每层 4 个 Pelton Cole-Cole 参数
        θ_n = [log10 ρ0_n, logit m_n, log10 τ_n, logit c_n]   (共 4N)
        或 共享 τ,c：每层仅 [log10 ρ0_n, logit m_n] + 2 全局 = 2N+2（稳健推荐）
@@ -73,7 +73,7 @@ def invert_one_station_ip(rhoa_obs: np.ndarray, vt_obs: np.ndarray,
                           ) -> dict:
     """单站 IP 4参数反演。返回 model + 残差。
 
-    vt_only_mode=True: 仅用 Vt 残差 (TEM 标准IP做法 工业做法 — 直接拟合关断后
+    vt_only_mode=True: 仅用 Vt 残差 (WLF pcvogoss_pc 工业做法 — 直接拟合关断后
     衰减曲线, 保留 IP 弛豫尾部). rhoa_obs 仅用于初值估计, 不进入残差。
     vt_only_mode=False (默认): 双残差 rhoa+Vt (旧路径, 数据已去 IP 时退化解)。
     """
@@ -96,7 +96,7 @@ def invert_one_station_ip(rhoa_obs: np.ndarray, vt_obs: np.ndarray,
     def resid(theta):
         vt_pred, rhoa_pred = unpack_theta(theta)
         if vt_only_mode:
-            # 纯 Vt 残差 (TEM 工业做法): rhoa_obs 信息不可靠(已去IP), 只用 Vt
+            # 纯 Vt 残差 (WLF 工业做法): rhoa_obs 信息不可靠(已去IP), 只用 Vt
             r_data = np.log10(vt_pred / vt_obs) / cfg['ERROR_VT_FRAC']
         else:
             r1 = np.log10(rhoa_pred / rhoa_obs) / cfg['ERROR_RHOA_FRAC']
@@ -202,7 +202,7 @@ def run_all_ip_inversions(out_root: str | Path,
         line_summ = []
         gates_unique = np.sort(df['t_sec'].unique())[:25]
 
-        # === TEM 标准IP做法 工业做法: 优先加载 decay_curves.npz 中的真实 Vt_obs ===
+        # === WLF pcvogoss_pc 工业做法: 优先加载 decay_curves.npz 中的真实 Vt_obs ===
         # decay NPZ 含完整 IP 弛豫尾部 (AATZero+陷波+带通+MAD+gating 后的衰减曲线)
         # prefer_vt_only=False 时强制走旧双残差路径 (即使 NPZ 存在也不用)
         npz_path = ldir / f'{line_tag}_decay_curves.npz'
@@ -214,7 +214,7 @@ def run_all_ip_inversions(out_root: str | Path,
                     decay_data = _nz['data'].item()  # dict[station][channel] -> dict
                 vt_only_mode = True
                 log_fn(f"  [IP] ✓ 加载 decay NPZ: {npz_path.name} ({len(decay_data)} 站)")
-                log_fn(f"  [IP] 启用 vt_only_mode=True (TEM 标准IP做法 工业做法)")
+                log_fn(f"  [IP] 启用 vt_only_mode=True (WLF pcvogoss_pc 工业做法)")
             except Exception as exc:
                 log_fn(f"  [IP] 加载 decay NPZ 失败, 回退双残差: {exc}")
                 decay_data = None

@@ -26,7 +26,7 @@ rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial']
 rcParams['axes.unicode_minus'] = False
 
 from .inversion import (forward_rhoa, DEFAULT_INV_CFG, depth_layer_centers,
-                        parse_occam_dat, MU0)
+                        parse_occam_dat, MU0, analytic_jacobian)
 
 ALGO_ADVANCED = ('occam_adaptive', 'lm_adaptive', 'cgls', 'mcmc')
 
@@ -52,6 +52,13 @@ def _numeric_jacobian(theta, t_g, z_c, rho_ref, w_g, fd_step=1e-4) -> np.ndarray
         log_p = np.log10(np.maximum(forward_rhoa(tp, t_g, z_c, rho_ref), 1e-3))
         J[:, j] = (log_p - log_base) / fd_step
     return J * w_g[:, None]
+
+
+def _jac_data(theta, t_g, z_c, rho_ref, w_g, cfg):
+    """按 cfg['JAC_MODE'] 选择数据雅可比: analytic(默认, 插值权重精确解) / numeric(校验)。"""
+    if cfg.get('JAC_MODE', 'analytic') == 'numeric':
+        return _numeric_jacobian(theta, t_g, z_c, rho_ref, w_g)
+    return analytic_jacobian(theta, t_g, z_c, rho_ref, w_g)
 
 
 def _smooth_matrix(n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -86,8 +93,8 @@ def _invert_occam_adaptive(t_g, r_g, w_g, z_c, cfg):
     for it in range(max_iter):
         if abs(chi2 - target) < tol_misfit:
             break
-        Jw = _numeric_jacobian(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g)
-        nfev += n_l
+        Jw = _jac_data(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g, cfg)
+        nfev += n_l if cfg.get('JAC_MODE', 'analytic') == 'numeric' else 1
         r = _data_resid(th, t_g, r_g, w_g, z_c, cfg['RHO_REF_DIFF'])
         JtJ = Jw.T @ Jw
         Jtr = Jw.T @ r
@@ -141,8 +148,8 @@ def _invert_lm_adaptive(t_g, r_g, w_g, z_c, cfg):
 
     cost = full_cost(th); nfev += 1
     for it in range(max_iter):
-        Jw = _numeric_jacobian(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g)
-        nfev += n_l
+        Jw = _jac_data(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g, cfg)
+        nfev += n_l if cfg.get('JAC_MODE', 'analytic') == 'numeric' else 1
         rd = _data_resid(th, t_g, r_g, w_g, z_c, cfg['RHO_REF_DIFF'])
         rs = np.sqrt(cfg['LAMBDA_SMOOTH']) * np.diff(th)
         # 增广雅可比
@@ -191,8 +198,8 @@ def _invert_cgls(t_g, r_g, w_g, z_c, cfg):
 
     D, DtD = _smooth_matrix(n_l)
     for it in range(max_iter):
-        Jw = _numeric_jacobian(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g)
-        nfev += n_l
+        Jw = _jac_data(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g, cfg)
+        nfev += n_l if cfg.get('JAC_MODE', 'analytic') == 'numeric' else 1
         rd = _data_resid(th, t_g, r_g, w_g, z_c, cfg['RHO_REF_DIFF'])
         # 右端项 = -J^T rd (负梯度方向)
         b = -Jw.T @ rd
@@ -236,9 +243,18 @@ def _invert_mcmc(t_g, r_g, w_g, z_c, cfg, n_samples=2000, burn_in=1000):
             _data_resid(th, t_g, r_g, w_g, z_c, cfg['RHO_REF_DIFF']),
             np.sqrt(cfg['LAMBDA_SMOOTH']) * np.diff(th)
         ])
+
+    def map_jac(th):
+        Jd = _jac_data(th, t_g, z_c, cfg['RHO_REF_DIFF'], w_g, cfg)
+        Dm = np.zeros((n_l - 1, n_l))
+        Dm[np.arange(n_l - 1), np.arange(n_l - 1)] = -np.sqrt(cfg['LAMBDA_SMOOTH'])
+        Dm[np.arange(n_l - 1), np.arange(1, n_l)] = np.sqrt(cfg['LAMBDA_SMOOTH'])
+        return np.vstack([Jd, Dm])
+
     th0 = np.full(n_l, np.log10(cfg['RHO_INIT']))
     try:
-        res = least_squares(resid, th0, bounds=(np.full(n_l, lo), np.full(n_l, hi)),
+        res = least_squares(resid, th0, jac=map_jac,
+                            bounds=(np.full(n_l, lo), np.full(n_l, hi)),
                             method='trf', max_nfev=200, x_scale='jac')
         th_map = res.x
     except Exception:
@@ -503,17 +519,46 @@ def _plot_mcmc_posterior(summary_list, z_c, out_png: Path):
     ax.legend(); fig.tight_layout(); fig.savefig(out_png, dpi=150); plt.close(fig)
 
 
+def _adv_line_worker(line_tag, out_root, algo, user_cfg, use_cache,
+                     mcmc_samples, mcmc_burn):
+    """子进程入口: 单线高级反演 (站内并行关闭, 防 CPU 超订)。"""
+    logs = []
+    try:
+        st = invert_line_advanced(line_tag, out_root, algo, user_cfg,
+                                  n_jobs=1, use_cache=use_cache,
+                                  mcmc_samples=mcmc_samples,
+                                  mcmc_burn=mcmc_burn, log_fn=logs.append)
+        return line_tag, st, logs
+    except Exception as e:
+        import traceback
+        logs.append(f'  ✗ {line_tag}: 异常: {e}\n{traceback.format_exc()}')
+        return line_tag, {'error': str(e)}, logs
+
+
 def run_all_advanced(out_root: str | Path, algo: str = 'occam_adaptive',
                      user_cfg: Optional[dict] = None,
                      n_jobs: int = 1, use_cache: bool = False,
-                     mcmc_samples: int = 2000,
+                     mcmc_samples: int = 2000, mcmc_burn: int = 1000,
+                     n_line_jobs: int = 1,
                      log_fn: Optional[Callable[[str], None]] = None) -> dict:
+    from .parallel_utils import map_lines
     log_fn = log_fn or (lambda s: print(s))
     out_root = Path(out_root)
     lines = sorted([p.name for p in out_root.iterdir() if p.is_dir()
                     and re.fullmatch(r'[1-5]线', p.name)])
-    log_fn(f'\n========== 高级反演 algo={algo} 测线={lines} ==========')
+    log_fn(f'\n========== 高级反演 algo={algo} 测线={lines} '
+          f'站内n_jobs={n_jobs} 线级n_line_jobs={n_line_jobs} ==========')
+    if n_line_jobs in (None, 0):
+        from .parallel_utils import auto_line_jobs
+        n_line_jobs = auto_line_jobs(len(lines))
+    if n_line_jobs > 1 and len(lines) > 1:
+        return map_lines(lines, _adv_line_worker,
+                         worker_args=(str(out_root), algo, user_cfg, use_cache,
+                                      mcmc_samples, mcmc_burn),
+                         n_line_jobs=n_line_jobs, log_fn=log_fn,
+                         label=f'高级反演[{algo}]')
     return {lt: invert_line_advanced(lt, out_root, algo, user_cfg,
                                      n_jobs, use_cache,
-                                     mcmc_samples=mcmc_samples, log_fn=log_fn)
+                                     mcmc_samples=mcmc_samples,
+                                     mcmc_burn=mcmc_burn, log_fn=log_fn)
             for lt in lines}

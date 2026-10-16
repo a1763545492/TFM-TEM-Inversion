@@ -5,7 +5,7 @@ tfm_cli_run.py — TFM 时频电磁法完整处理 命令行 Headless 入口
 完全离线运行，仅读写本地文件。数据绝不上传云端。
 
 用法 (通过 run_tfm.bat 调):
-    run_tfm.bat --cli  --project D:\\MyProject\\myfile  --out D:\\TEM_Work\\example_output\\7_tfm_production
+    run_tfm.bat --cli  --project D:\\MyProject\\myfile  --out D:\\WLF_Work\\example_output\\7_tfm_production
     run_tfm.bat --cli  --no-preprocess --inv            (跳过预处理, 只跑1D反演)
     run_tfm.bat --cli  --occam --occam-exe D:\\Tools\\Occam1D.exe
 
@@ -33,6 +33,7 @@ from tfm_engine.occam_bridge import materialize_all
 from tfm_engine.inv_algorithms import run_all_algo, run_all_algos_compare, ALGO_CHOICES
 from tfm_engine.adv_inversion import run_all_advanced, ALGO_ADVANCED
 from tfm_engine.lci_inversion import run_all_lci
+from tfm_engine.dl_inversion import run_all_dl
 from tfm_engine.current_proc import run_all_current
 
 
@@ -103,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
                    default=r'D:\MyProject\myfile',
                    help='数据根目录 (myfile/, 含 1线..5线 + 坐标文件.xls)')
     p.add_argument('--out', '-O',
-                   default=r'D:\MyProject\output',
+                   default=r'D:\WLF_Work\example_output\7_tfm_production',
                    help='输出根目录')
 
     # ------- Step 开关 -------
@@ -120,13 +121,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--no-occam', dest='do_occam', action='store_false',
                    help='跳过Occam桥接')
     p.add_argument('--current', dest='do_current', action='store_true', default=False,
-                   help='运行 Step0: 发射电流档处理 (TXCAL01 波形/幅值/关断 QC)')
+                   help='运行 Step0: 发射电流档处理 (CXXST01 波形/幅值/关断 QC)')
     p.add_argument('--inv-algo', default='trf',
-                   choices=list(ALGO_CHOICES) + list(ALGO_ADVANCED) + ['lci', 'all'],
+                   choices=list(ALGO_CHOICES) + list(ALGO_ADVANCED)
+                   + ['lci', 'dl', 'all'],
                    help='1D 反演算法: trf(默认)/lm/occam/all 或高级算法 '
                         'occam_adaptive(λ自动寻优+L曲线) / lm_adaptive(Nielsen阻尼) / '
                         'cgls(共轭梯度) / mcmc(后验不确定性) / '
-                        'lci(横向约束联合反演,拟2D断面)')
+                        'lci(横向约束联合反演,拟2D断面) / '
+                        'dl(U-Net 端到端, 首次运行自动训练权重)')
+    p.add_argument('--dl-train', dest='dl_train', action='store_true',
+                   default=False,
+                   help='仅训练 DL 权重 (U-Net, torch 可用时) 后退出')
+    p.add_argument('--dl-samples', type=int, default=4000,
+                   help='DL 训练合成样本数 (默认 4000)')
 
     # ------- Occam 桥接参数 -------
     p.add_argument('--occam-exe', default='Occam1D.exe',
@@ -163,12 +171,23 @@ def build_parser() -> argparse.ArgumentParser:
                         help='电阻率上下界, 格式 "lo,hi" (默认 "0.1,1e8")')
     hp_inv.add_argument('--n-jobs', type=int, default=1,
                         help='并行进程数 (默认 1=串行; >1 启用 ProcessPool 逐站并行)')
+    hp_inv.add_argument('--n-line-jobs', type=int, default=1,
+                        help='多测线并行进程数 (1=逐线串行, 默认; >1 按测线 ProcessPool 并行并自动关闭站内并行; '
+                             '0=自动 min(测线数,CPU核-1)。轻量算法受 Windows 进程启动开销影响, '
+                             '建议仅在大数据/重算法(MCMC/FE正演/外部Occam)时 >1)')
     hp_inv.add_argument('--use-cache', action='store_true', default=False,
                         help='启用逐站缓存断点续跑 (cfg 变更自动失效)')
     hp_inv.add_argument('--mcmc-samples', type=int, default=2000,
                         help='MCMC 采样数 (仅 --inv-algo mcmc 有效, 默认 2000)')
-    hp_inv.add_argument('--lambda-lat', type=float, default=1.0,
-                        help='★ LCI 首选调参. 横向约束权重 (默认 1.0; 越大断面越匀)')
+    p.add_argument('--lambda-lat', type=float, default=1.0,
+                       help='★ LCI 首选调参. 横向约束权重 (默认 1.0; 越大断面越匀)')
+    p.add_argument('--report', dest='do_report', action='store_true', default=False,
+                   help='流水线结束后一键生成单文件自包含 HTML 报告 (report_gen)')
+    p.add_argument('--timelapse', nargs=2, metavar=('EPOCH1_ROOT', 'EPOCH2_ROOT'),
+                   default=None,
+                   help='多时态对比: 两个期次输出根目录 (共用测线做电阻率变化分析)')
+    p.add_argument('--timelapse-labels', default='1,2',
+                   help='两期标签, 逗号分隔 (默认 1,2)')
     return p
 
 
@@ -182,6 +201,16 @@ def main(argv=None) -> int:
     project_root = Path(args.project)
     out_root     = Path(args.out)
     out_root.mkdir(parents=True, exist_ok=True)
+
+    # DL 训练独立入口 (与流水线解耦)
+    if args.dl_train:
+        from tfm_engine.dl_inversion import train_dl, _HAS_TORCH
+        print(f'[DL] torch={_HAS_TORCH}, 开始训练 n={args.dl_samples} ...')
+        p = train_dl(n_train=args.dl_samples,
+                     backend='auto',
+                     log_fn=lambda s: print(s))
+        print(f'[DL] 权重已保存: {p}')
+        return 0
 
     # 日志
     ts0 = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -232,7 +261,8 @@ def main(argv=None) -> int:
         try:
             log_fn('\n>>> [Step1-2] 预处理流水线 启动')
             cfg_pre = _merge_preprocess_cfg(args, log_fn)
-            pre_summary = run_full_preprocess(project_root, out_root, cfg_pre, log_fn)
+            pre_summary = run_full_preprocess(project_root, out_root, cfg_pre, log_fn,
+                                              n_line_jobs=args.n_line_jobs)
             summary['preprocess'] = pre_summary
             log_fn('<<< [Step1-2] 预处理完成')
         except Exception as e:
@@ -250,26 +280,37 @@ def main(argv=None) -> int:
                 inv_summary = run_all_algos_compare(out_root, user_cfg=cfg_inv,
                                                     occam_cfg={'LAMBDA_INIT': args.lambda_init},
                                                     n_jobs=args.n_jobs, use_cache=args.use_cache,
+                                                    n_line_jobs=args.n_line_jobs,
                                                     log_fn=log_fn)
             elif algo == 'lci':
                 log_fn(f'\n>>> [Step3] LCI 横向约束联合反演 启动 '
-                       f'λ_lat={args.lambda_lat} n_jobs={args.n_jobs}')
+                       f'λ_lat={args.lambda_lat} n_jobs={args.n_jobs} '
+                       f'n_line_jobs={args.n_line_jobs}')
                 inv_summary = run_all_lci(out_root,
                                           user_cfg={**cfg_inv, 'LAMBDA_LAT': args.lambda_lat},
-                                          n_jobs=args.n_jobs, log_fn=log_fn)
+                                          n_jobs=args.n_jobs,
+                                          n_line_jobs=args.n_line_jobs,
+                                          log_fn=log_fn)
             elif algo in ALGO_ADVANCED:
                 log_fn(f'\n>>> [Step3] 高级 1D 反演 启动 [algo={algo}] '
-                       f'n_jobs={args.n_jobs} cache={args.use_cache}')
+                       f'n_jobs={args.n_jobs} n_line_jobs={args.n_line_jobs} cache={args.use_cache}')
                 inv_summary = run_all_advanced(out_root, algo=algo, user_cfg=cfg_inv,
                                                n_jobs=args.n_jobs, use_cache=args.use_cache,
+                                               n_line_jobs=args.n_line_jobs,
                                                mcmc_samples=args.mcmc_samples,
                                                log_fn=log_fn)
+            elif algo == 'dl':
+                log_fn('\n>>> [Step3] DL 端到端反演 (U-Net/线性降级)')
+                inv_summary = run_all_dl(out_root,
+                                         n_layers=cfg_inv.get('N_LAYERS', 25),
+                                         log_fn=log_fn)
             else:
                 log_fn(f'\n>>> [Step3] 1D 反演 启动 [algo={algo}] '
-                       f'n_jobs={args.n_jobs} cache={args.use_cache}')
+                       f'n_jobs={args.n_jobs} n_line_jobs={args.n_line_jobs} cache={args.use_cache}')
                 inv_summary = run_all_algo(out_root, algo=algo, user_cfg=cfg_inv,
                                            occam_cfg={'LAMBDA_INIT': args.lambda_init},
                                            n_jobs=args.n_jobs, use_cache=args.use_cache,
+                                           n_line_jobs=args.n_line_jobs,
                                            log_fn=log_fn)
             summary['inversion'] = inv_summary
             log_fn('<<< [Step3] 1D反演完成')
@@ -289,6 +330,41 @@ def main(argv=None) -> int:
             log_fn(f'[ERROR] Occam 桥接失败: {e}')
             log_fn(traceback.format_exc())
             rc = 40
+
+    # ---- Step5: HTML 报告 (可选) ----
+    if args.do_report and rc == 0:
+        try:
+            from tfm_engine.report_gen import generate_report
+            log_fn('\n>>> [Step5] 生成 HTML 报告')
+            report_path = generate_report(out_root, log_fn=log_fn)
+            summary['report'] = str(report_path)
+            log_fn(f'<<< [Step5] 报告完成: {report_path}')
+        except Exception as e:
+            log_fn(f'[ERROR] 报告生成失败: {e}')
+            log_fn(traceback.format_exc())
+            rc = 50
+
+    # ---- Step6: 多时态对比 (独立工具, 不依赖本次流水线) ----
+    if args.timelapse:
+        try:
+            from tfm_engine.timelapse import compare_epochs_all_lines
+            e1, e2 = args.timelapse
+            lab = [s.strip() for s in args.timelapse_labels.split(',')]
+            tl_algo = args.inv_algo if args.inv_algo in \
+                ('trf', 'lm', 'occam', 'occam_adaptive', 'lm_adaptive',
+                 'cgls', 'mcmc', 'lci', 'dl') else 'trf'
+            log_fn(f'\n>>> [Step6] 多时态对比 algo={tl_algo} '
+                   f'{lab[0]}→{lab[1]}')
+            tl_df = compare_epochs_all_lines(e1, e2, algo=tl_algo,
+                                             label1=lab[0], label2=lab[1],
+                                             log_fn=log_fn)
+            summary['timelapse_lines'] = list(tl_df['line']) \
+                if len(tl_df) else []
+            log_fn('<<< [Step6] 多时态对比完成')
+        except Exception as e:
+            log_fn(f'[ERROR] 多时态对比失败: {e}')
+            log_fn(traceback.format_exc())
+            rc = rc or 60
 
     # ---- 最终汇总 ----
     elapsed = time.time() - t_start

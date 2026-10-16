@@ -2,11 +2,11 @@
 """
 tfm_engine.preprocess_plus
 ==========================
-TEM 体系增强预处理（完全按 proc_kru.m / tproc_kru.m / cbfilt_kru.m / AATZero 设计）：
+WLF 体系增强预处理（完全按 proc_kru.m / tproc_kru.m / cbfilt_kru.m / AATZero 设计）：
   1. 关断时刻微调 (ATZero style) — Hx 峰精确到子样本
   2. 去 DC (ATZero 前后窗口 median)
   3. 工频陷波 50/100/150 Hz (IIR butterworth notch, quality=30)
-  4. 带通滤波 FIR 2Hz ~ 80kHz (对应 TEM fir3_20/fir10_30/fir15_40/fir20lp 组合)
+  4. 带通滤波 FIR 2Hz ~ 80kHz (对应 WLF fir3_20/fir10_30/fir15_40/fir20lp 组合)
   5. 关断后 gates 几何采样 + 衰减曲线提取 (curview_kru style)
   6. 多 picket 叠加 median 合成 (抗野值, average.m)
   7. 野值剔除 MAD + 5σ clip (verify_kru.m style)
@@ -24,18 +24,18 @@ import re
 from pathlib import Path
 import numpy as np
 from scipy import signal as _sgn
-from .dat_parser import load_tem_dat  # 复用 DAT 读取 → 返回 WlfDatData(cube=, header=)
+from .dat_parser import load_wlf_dat  # 复用 DAT 读取 → 返回 WlfDatData(cube=, header=)
 from .excel_meta import parse_em_xlsx
 from .coord_loader import load_authoritative_coordinates   # 权威坐标加载 (公开 API)
 from .preprocess import DEFAULT_CFG  # 仅复用公开常量 (DEFAULT_CFG 存在, 其他私有符号不导入)
 
-# TEM 仪器采样率 (未在头段暴露, 行业默认: 544,859 样/通道 ÷ 约 20ms 记录 ≈ 27.243 MHz)
+# WLF 仪器采样率 (未在头段暴露, 行业默认: 544,859 样/通道 ÷ 约 20ms 记录 ≈ 27.243 MHz)
 # 可由 user_cfg['TEM_FS_HZ'] 覆盖
-_TEM_DEFAULT_FS_HZ = 27_243_000.0
+_WLF_DEFAULT_FS_HZ = 27_243_000.0
 
 
 # ============================================================
-# 1. 关断时刻微调 (TEM AATZero 原理)
+# 1. 关断时刻微调 (WLF AATZero 原理)
 # ============================================================
 def refine_t_cutoff(hx_abs: np.ndarray, t_cutoff_init: int,
                     radius: int = 25) -> tuple[int, float]:
@@ -46,7 +46,7 @@ def refine_t_cutoff(hx_abs: np.ndarray, t_cutoff_init: int,
     window = hx_abs[lo:hi + 1]
     idx_rel = int(np.argmax(window))
     idx_abs = lo + idx_rel
-    # 子样本抛物线插值 (TEM AATZero 精修)
+    # 子样本抛物线插值 (WLF AATZero 精修)
     if 0 < idx_rel < len(window) - 1:
         a, b, c = window[idx_rel - 1], window[idx_rel], window[idx_rel + 1]
         denom = (a - 2 * b + c)
@@ -67,7 +67,7 @@ def remove_dc(ch_raw: np.ndarray, t_cutoff: int, frac_pre: float = 0.10) -> np.n
 
 
 def notch_50_150(ch: np.ndarray, fs_hz: float, f0_list=(50, 100, 150), Q=30.0) -> np.ndarray:
-    """IIR 陷波 50/100/150 Hz (TEM cbfilt 工频抑制)。"""
+    """IIR 陷波 50/100/150 Hz (WLF cbfilt 工频抑制)。"""
     y = ch.astype(np.float64)
     nyq = fs_hz * 0.5
     for f0 in f0_list:
@@ -80,7 +80,7 @@ def notch_50_150(ch: np.ndarray, fs_hz: float, f0_list=(50, 100, 150), Q=30.0) -
 def bandpass_tem(ch: np.ndarray, fs_hz: float,
                  lowcut_hz: float = 2.0, highcut_hz: float = 80_000.0,
                  order: int = 4) -> np.ndarray:
-    """Butterworth 带通 FIR (对应 TEM fir*.mat 组)。"""
+    """Butterworth 带通 FIR (对应 WLF fir*.mat 组)。"""
     nyq = fs_hz * 0.5
     low = max(1e-3, lowcut_hz / nyq)
     high = min(0.999, highcut_hz / nyq)
@@ -235,8 +235,8 @@ def run_full_preprocess_plus(project_root: str | Path,
                 if dpath is not None: break
             if dpath is None: continue
             try:
-                # load_tem_dat 返回 WlfDatData (单值, 非 tuple)，含 .cube / .header
-                wd = load_tem_dat(dpath, log_fn=log_fn, validate=True, strict_per_ch=False)
+                # load_wlf_dat 返回 WlfDatData (单值, 非 tuple)，含 .cube / .header
+                wd = load_wlf_dat(dpath, log_fn=log_fn, validate=True, strict_per_ch=False)
                 cube = wd.cube
                 header = wd.header
             except Exception as exc:
@@ -249,7 +249,7 @@ def run_full_preprocess_plus(project_root: str | Path,
             gates_us = np.geomspace(cfg['T_MIN_US'], cfg['T_MAX_US'], num=cfg['TEM_N_GATES'])
             # 采样率: user_cfg 覆盖 → header 推导 → 默认 27.243 MHz
             fs_hz = float(user_cfg.get('TEM_FS_HZ') if isinstance(user_cfg, dict) and 'TEM_FS_HZ' in user_cfg
-                          else getattr(header, 'fs_hz', _TEM_DEFAULT_FS_HZ))
+                          else getattr(header, 'fs_hz', _WLF_DEFAULT_FS_HZ))
             # 按 per-instrument 的 stations 顺序 (按 Excel order 去重保持顺序)
             seen = set(); stations_here = []
             for r in sorted(rows, key=lambda x: x.get('order', 0)):
