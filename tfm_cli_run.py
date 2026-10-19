@@ -127,17 +127,23 @@ def build_parser() -> argparse.ArgumentParser:
                    help='运行 Step0: 发射电流档处理 (CXXST01 波形/幅值/关断 QC)')
     p.add_argument('--inv-algo', default='trf',
                    choices=list(ALGO_CHOICES) + list(ALGO_ADVANCED)
-                   + ['lci', 'dl', 'all'],
+                   + ['lci', 'dl', 'pinn', 'mdn', 'tcn', 'all'],
                    help='1D 反演算法: trf(默认)/lm/occam/all 或高级算法 '
                         'occam_adaptive(λ自动寻优+L曲线) / lm_adaptive(Nielsen阻尼) / '
                         'cgls(共轭梯度) / mcmc(后验不确定性) / '
                         'lci(横向约束联合反演,拟2D断面) / '
-                        'dl(U-Net 端到端, 首次运行自动训练权重)')
+                        'dl(U-Net 端到端) / '
+                        'pinn(物理信息神经网络,物理约束嵌入损失) / '
+                        'mdn(混合密度网络,不确定度量化) / '
+                        'tcn(时序卷积网络,因果膨胀卷积)')
     p.add_argument('--dl-train', dest='dl_train', action='store_true',
                    default=False,
                    help='仅训练 DL 权重 (U-Net, torch 可用时) 后退出')
     p.add_argument('--dl-samples', type=int, default=4000,
                    help='DL 训练合成样本数 (默认 4000)')
+    p.add_argument('--dl-train-adv', dest='dl_train_adv', default=None,
+                   choices=['pinn', 'mdn', 'tcn'],
+                   help='训练高级 DL 权重 (pinn/mdn/tcn) 后退出')
 
     # ------- Occam 桥接参数 -------
     p.add_argument('--occam-exe', default='Occam1D.exe',
@@ -267,6 +273,16 @@ def main(argv=None) -> int:
         print(f'[DL] 权重已保存: {p}')
         return 0
 
+    # 高级 DL 训练独立入口 (PINN/MDN/TCN)
+    if args.dl_train_adv:
+        from tfm_engine.dl_advanced import train_dl_advanced
+        print(f'[DL-adv] 开始训练 {args.dl_train_adv.upper()} ...')
+        p = train_dl_advanced(algo=args.dl_train_adv,
+                              n_train=args.dl_samples,
+                              log_fn=lambda s: print(s))
+        print(f'[DL-adv] 权重已保存: {p}')
+        return 0
+
     # 日志
     ts0 = datetime.now().strftime('%Y%m%d_%H%M%S')
     log_file = out_root / f'cli_run_{ts0}.log'
@@ -365,6 +381,13 @@ def main(argv=None) -> int:
                 inv_summary = run_all_dl(out_root,
                                          n_layers=cfg_inv.get('N_LAYERS', 25),
                                          log_fn=log_fn)
+            elif algo in ('pinn', 'mdn', 'tcn'):
+                from tfm_engine.dl_advanced import run_all_advanced_dl
+                label = {'pinn': 'PINN', 'mdn': 'MDN', 'tcn': 'TCN'}[algo]
+                log_fn(f'\n>>> [Step3] 高级DL反演 [{label}] 启动')
+                inv_summary = run_all_advanced_dl(out_root, algo=algo,
+                                                   n_layers=cfg_inv.get('N_LAYERS', 25),
+                                                   log_fn=log_fn)
             else:
                 log_fn(f'\n>>> [Step3] 1D 反演 启动 [algo={algo}] '
                        f'n_jobs={args.n_jobs} n_line_jobs={args.n_line_jobs} cache={args.use_cache}')

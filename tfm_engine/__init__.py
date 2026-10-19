@@ -81,6 +81,7 @@ from . import timelapse          # 多时态监测对比 (电阻率变化率, �
 from . import fem2d_forward      # 2D 有限元 DC 正演 (三角剖分/PEFC 近源加密/VTI单元)
 from . import anisotropy         # VTI 各向异性 (ρh/ρv, λ 参数化)
 from . import dl_inversion       # DL 端到端 1D 反演 (1D U-Net, torch可选/numpy降级)
+from . import dl_advanced        # 高级 DL 反演 (PINN/MDN/TCN, 物理约束/不确定度/时序卷积)
 
 __all__ = (
     # v1
@@ -101,5 +102,6 @@ __all__ = (
     # v7
     "parallel_utils", "model_compare", "export_formats", "report_gen",
     "timelapse", "fem2d_forward", "anisotropy", "dl_inversion",
+    "dl_advanced",
 )
 
