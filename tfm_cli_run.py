@@ -14,6 +14,7 @@ tfm_cli_run.py — TFM 时频电磁法完整处理 命令行 Headless 入口
 """
 from __future__ import annotations
 import argparse
+import importlib
 import re
 import sys
 import json
@@ -125,6 +126,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help='跳过Occam桥接')
     p.add_argument('--current', dest='do_current', action='store_true', default=False,
                    help='运行 Step0: 发射电流档处理 (CXXST01 波形/幅值/关断 QC)')
+
+    # ------- 数据体检 / 配置复现 -------
+    p.add_argument('--check', dest='do_check', action='store_true', default=False,
+                   help='运行 Step0.5 数据体检后退出 (结构对齐/dat 健康; rc=2 有错误)')
+    p.add_argument('--check-deep', dest='check_deep', action='store_true', default=False,
+                   help='体检时逐个读取全部 dat 文件 (默认每 section 抽检 1 个)')
+    p.add_argument('--config', dest='config_path', default=None,
+                   help='从参数快照 JSON 复现历史运行 (args_snapshot_*.json 全量恢复; '
+                        'cfg_snapshot_*.json 仅恢复预处理超参)')
     p.add_argument('--inv-algo', default='trf',
                    choices=list(ALGO_CHOICES) + list(ALGO_ADVANCED)
                    + ['lci', 'dl', 'pinn', 'mdn', 'tcn', 'all'],
@@ -253,15 +263,126 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 # ================================================================
+# ================================================================
+# 参数快照 / 环境指纹 (--config 复现支持)
+# ================================================================
+_SKIP_SNAPSHOT_KEYS = {'project', 'out', 'config_path', 'do_check', 'check_deep'}
+
+
+def _environment_fingerprint() -> dict:
+    """当前运行环境指纹 (快照内嵌, 复现时对比告警)。"""
+    import platform
+    import tfm_engine
+    fp = {'python': platform.python_version(),
+          'platform': platform.platform(),
+          'tfm_engine': tfm_engine.__version__,
+          'timestamp': datetime.now().isoformat(timespec='seconds')}
+    for mod in ('numpy', 'scipy', 'pandas', 'matplotlib'):
+        try:
+            fp[mod] = importlib.import_module(mod).__version__
+        except Exception:
+            fp[mod] = 'N/A'
+    return fp
+
+
+def _write_args_snapshot(args, out_root: Path) -> None:
+    """把完整 CLI 参数 + 环境指纹写入 out_root/args_snapshot_{ts}.json。"""
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    payload = {
+        '__format__': 'tfm-cli-args-v1',
+        'environment': _environment_fingerprint(),
+        'args': {k: v for k, v in vars(args).items()
+                 if k not in _SKIP_SNAPSHOT_KEYS and _jsonable(v)},
+    }
+    path = out_root / f'args_snapshot_{ts}.json'
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False),
+                    encoding='utf-8')
+    print(f'[Snapshot] 参数快照: {path}')
+
+
+def _jsonable(v) -> bool:
+    try:
+        json.dumps(v)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _load_args_snapshot(args) -> None:
+    """从快照恢复 CLI 参数。
+
+    支持: args_snapshot_*.json (全量恢复) / cfg_snapshot_*.json (仅预处理超参)。
+    恢复时对比环境指纹, 库版本不一致只告警不阻断。
+    """
+    src = Path(args.config_path)
+    if not src.is_file():
+        raise FileNotFoundError(f'--config 快照不存在: {src}')
+    data = json.loads(src.read_text(encoding='utf-8'))
+
+    fmt = data.get('__format__')
+    env = data.get('environment') or {}
+    if env:
+        cur = _environment_fingerprint()
+        diffs = [f'{k}: 快照={env.get(k)} vs 当前={cur.get(k)}'
+                 for k in ('python', 'tfm_engine', 'numpy', 'scipy')
+                 if env.get(k) not in (None, cur.get(k))]
+        if diffs:
+            print('[Snapshot] ⚠ 环境指纹差异 (结果可能有差异, 仅告警):')
+            for d in diffs:
+                print(f'    {d}')
+
+    if fmt == 'tfm-cli-args-v1':
+        restored = []
+        for k, v in (data.get('args') or {}).items():
+            if k in _SKIP_SNAPSHOT_KEYS:
+                continue
+            if hasattr(args, k):
+                setattr(args, k, v)
+                restored.append(f'{k}={v}')
+        print(f'[Snapshot] 已从 {src.name} 恢复 {len(restored)} 个参数:')
+        for r in restored:
+            print(f'    {r}')
+    else:
+        # 旧版 preprocess cfg_snapshot: 键 → CLI 参数映射
+        mapping = {'RHOA_SCALE_CAL': 'rhoa_scale',
+                   'G_ADC_COUNTS_PER_VOLT': 'g_adc',
+                   'TEM_N_GATES': 'n_gates'}
+        restored = []
+        for ck, ak in mapping.items():
+            if ck in data and hasattr(args, ak):
+                setattr(args, ak, data[ck])
+                restored.append(f'{ak}={data[ck]} (from {ck})')
+        print(f'[Snapshot] 已从预处理快照 {src.name} 恢复 {len(restored)} 个超参 '
+              f'(旧版快照不含反演参数):')
+        for r in restored:
+            print(f'    {r}')
+
+
 # Main
 # ================================================================
 def main(argv=None) -> int:
     argv = argv if argv is not None else sys.argv[1:]
     args = build_parser().parse_args(argv)
 
+    # ---- --config: 参数快照反向加载 (在其余逻辑之前恢复 args) ----
+    if args.config_path:
+        _load_args_snapshot(args)
+
     project_root = Path(args.project)
     out_root     = Path(args.out)
     out_root.mkdir(parents=True, exist_ok=True)
+
+    # ---- --check: Step0.5 数据体检独立入口 ----
+    if args.do_check:
+        from tfm_engine.data_check import check_project
+        r = check_project(project_root, out_root, deep=args.check_deep,
+                          log_fn=lambda s: print(s))
+        print(f"[Step0.5] 体检 rc={r['rc']} "
+              f"({len(r['errors'])} 错误 / {len(r['warns'])} 告警)")
+        return r['rc']
+
+    # ---- 写参数快照 (args + 环境指纹, 供 --config 复现) ----
+    _write_args_snapshot(args, out_root)
 
     # DL 训练独立入口 (与流水线解耦)
     if args.dl_train:

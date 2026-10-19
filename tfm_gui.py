@@ -125,6 +125,8 @@ class TFMMainApp:
         self.tab_proj  = ttk.Frame(self.nb);        self.nb.add(self.tab_proj,  text=" ⑩ Project DB ")
         self.tab_cmp   = ttk.Frame(self.nb);        self.nb.add(self.tab_cmp,   text=" ⑪ Compare QC ")
         self.tab_batch = ttk.Frame(self.nb);        self.nb.add(self.tab_batch,text=" ⑫ Batch Queue ")
+        self.tab_help  = ttk.Frame(self.nb);        self.nb.add(self.tab_help, text=" ⑬ Help ")
+        self._build_tab_help()
 
         self._build_tab_basic()
         self._build_tab_model()
@@ -1613,6 +1615,70 @@ class TFMMainApp:
             os.startfile(str(p))
         except Exception:
             pass
+
+    # =================================================================
+    # 第 13 Tab: Help 内置帮助
+    # =================================================================
+    def _build_tab_help(self):
+        import tkinter as tk
+        from tkinter import ttk, scrolledtext
+        import tfm_engine
+
+        f = self.tab_help
+        top = ttk.Frame(f); top.pack(fill="x", padx=10, pady=8)
+        ttk.Label(top, text=f"TFM-TEM-Inversion  v{tfm_engine.__version__}",
+                  font=("Microsoft YaHei", 12, "bold"), foreground="#0a5cad"
+                  ).pack(side="left")
+
+        def _open_docs():
+            docs = Path(__file__).resolve().parent / 'docs'
+            if docs.is_dir():
+                os.startfile(str(docs))
+
+        def _open_report_dir():
+            p = self.var_out.get()
+            if p and Path(p).is_dir():
+                os.startfile(p)
+
+        ttk.Button(top, text="📂 打开文档目录", command=_open_docs).pack(
+            side="right", padx=4)
+        ttk.Button(top, text="📂 打开输出目录", command=_open_report_dir).pack(
+            side="right", padx=4)
+
+        txt = scrolledtext.ScrolledText(f, wrap="word", font=("Microsoft YaHei", 9),
+                                        bg="#fbfbfb")
+        txt.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        help_body = f"""【快速上手】
+  1. 第①页设置 数据根 (含 1-5线 + 坐标文件.xls) 和 输出根
+  2. 勾选流水线步骤 → 点"开始" (或第⑫页批量队列排队执行)
+  3. 产物在各测线子目录; 第⑪页多算法对比; 第⑫页一键 HTML 报告
+
+【反演算法选型】
+  · trf / lm / occam      基础迭代法 (精细反演, 首选)
+  · occam_adaptive        λ 自动寻优 + L 曲线
+  · mcmc                  后验不确定性
+  · lci                   横向约束联合反演 (拟 2D)
+  · dl / pinn / mdn / tcn 端到端快速成像 (秒级, 首跑自动训练)
+      - pinn  物理一致性强, 适合高噪声
+      - mdn   唯一支持不确定度量化
+      - tcn   训练推理最快
+  · ip-inversion          同时反演电阻率 + 极化率 (Pelton Cole-Cole)
+
+【工作流建议】
+  端到端法出快速成像 → 迭代法精细反演 → 第⑪页交叉验证 → HTML 报告
+
+【CLI 同等功能】
+  python tfm_cli_run.py -P 数据根 -O 输出根 --inv --inv-algo trf --report
+  体检: --check (结构+dat健康)   复现: --config args_snapshot_xxx.json
+  详见 docs/cli_usage.md
+
+【版本信息】
+  tfm_engine v{tfm_engine.__version__}  ·  13 GUI 页  ·  12 种反演算法
+  完全离线运行, 数据绝不上传云端
+"""
+        txt.insert("1.0", help_body)
+        txt.configure(state="disabled")
 
     # =================================================================
     # TAB 12: Batch Queue (多测线排队执行, 后台线程不阻塞 UI)

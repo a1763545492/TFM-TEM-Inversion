@@ -36,7 +36,7 @@ tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0
 **统一日志接口**：所有模块接受 log_fn(str) 回调。
 ================================================================================
 """
-__version__ = "2.5.0"
+__version__ = "3.0.0"
 
 # v1 核心模块
 from . import dat_parser
@@ -82,6 +82,7 @@ from . import fem2d_forward      # 2D 有限元 DC 正演 (三角剖分/PEFC 近
 from . import anisotropy         # VTI 各向异性 (ρh/ρv, λ 参数化)
 from . import dl_inversion       # DL 端到端 1D 反演 (1D U-Net, torch可选/numpy降级)
 from . import dl_advanced        # 高级 DL 反演 (PINN/MDN/TCN, 物理约束/不确定度/时序卷积)
+from . import data_check         # Step0.5 数据体检 (结构对齐/文件健康/坏数据前置检测)
 
 __all__ = (
     # v1
@@ -102,6 +103,6 @@ __all__ = (
     # v7
     "parallel_utils", "model_compare", "export_formats", "report_gen",
     "timelapse", "fem2d_forward", "anisotropy", "dl_inversion",
-    "dl_advanced",
+    "dl_advanced", "data_check",
 )
 

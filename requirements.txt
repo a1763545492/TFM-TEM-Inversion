@@ -1,5 +1,20 @@
-numpy
-scipy
-pandas
-matplotlib
-openpyxl
+# TFM-TEM-Inversion 主依赖清单 (tfm_engine v3.x)
+# 本机 Anaconda Python 3.13 已全装齐, 此文件供"纯新环境"用户使用
+# 安装: pip install -r requirements.txt
+# 可复现环境: pip install -r requirements.txt && pip install pytest
+
+# ====== 核心依赖 (必需) ======
+numpy>=1.26,<3
+pandas>=2.0,<3
+scipy>=1.11,<2
+openpyxl>=3.1,<4
+matplotlib>=3.7,<4
+plotly>=5.18,<7          # viz_3d 交互式 3D 可视化 (HTML 输出)
+
+# ====== 可选依赖 (安装后解锁高级功能, 非必须) ======
+# torch>=2.0,<3           # DL 端到端训练 (dl_inversion/dl_advanced 推理纯 numpy 不需要)
+# rasterio>=1.3           # GeoTIFF 导出 (export_formats 其余格式不需要)
+# pytest>=8               # 运行测试套件 (python -m pytest tests/ -q)
+
+# tk (GUI) 为 Python 标准库自带, Anaconda / python.org 安装包均已包含;
+# Linux 极简环境需额外 apt install python3-tk
