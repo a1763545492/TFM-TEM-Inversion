@@ -71,7 +71,7 @@ python tfm_cli_run.py ... --inv --inv-algo all --report
 
 `--compare-algos` 接受逗号分隔的算法名，未指定时自动扫描 `out_root/{line}/` 下所有 `_inv_{algo}_summary.csv` 文件。
 
-支持算法：`trf`, `lm`, `occam`, `occam_adaptive`, `lm_adaptive`, `cgls`, `mcmc`, `lci`, `dl`
+支持算法：`trf`, `lm`, `occam`, `occam_adaptive`, `lm_adaptive`, `cgls`, `mcmc`, `lci`, `dl`, `pinn`, `mdn`, `tcn`
 
 ### 3.4 产物文件
 
@@ -149,13 +149,21 @@ python tfm_cli_run.py ... --inv --inv-algo lci --lambda-lat 2.0
 # DL 端到端
 python tfm_cli_run.py ... --inv --inv-algo dl
 
+# 高级 DL 算法（PINN/MDN/TCN，权重缺失时自动训练，需 torch）
+python tfm_cli_run.py ... --inv --inv-algo pinn   # 物理信息神经网络，物理约束嵌入损失
+python tfm_cli_run.py ... --inv --inv-algo mdn    # 混合密度网络，输出不确定度
+python tfm_cli_run.py ... --inv --inv-algo tcn    # 时序卷积网络，快速成像
+
+# 仅训练高级 DL 权重（独立入口，与流水线解耦）
+python tfm_cli_run.py --dl-train-adv pinn --dl-samples 4000
+
 # 并行加速
 python tfm_cli_run.py ... --inv --n-jobs 4 --n-line-jobs 2
 ```
 
 | 参数 | 默认 | 说明 |
 |:---|:---|:---|
-| `--inv-algo` | trf | trf/lm/occam/all/occam_adaptive/lm_adaptive/cgls/mcmc/lci/dl |
+| `--inv-algo` | trf | trf/lm/occam/all/occam_adaptive/lm_adaptive/cgls/mcmc/lci/dl/**pinn/mdn/tcn** |
 | `--n-jobs` | 1 | 站内并行进程数 |
 | `--n-line-jobs` | 1 | 测线并行进程数（0=自动） |
 | `--use-cache` | False | 逐站缓存断点续跑 |
@@ -163,6 +171,11 @@ python tfm_cli_run.py ... --inv --n-jobs 4 --n-line-jobs 2
 | `--n-layers` | 25 | 反演层数 |
 | `--lambda-lat` | 1.0 | LCI 横向约束权重 |
 | `--mcmc-samples` | 2000 | MCMC 采样数 |
+| `--dl-samples` | 4000 | DL/高级DL 合成训练样本数 |
+
+> **高级 DL 算法选型**（详见 [dl_advanced.md](dl_advanced.md)）：pinn 物理一致性强、适合高噪声实测；
+> mdn 唯一支持不确定度量化（置信区间）；tcn 训练推理最快、适合大批量数据。
+> 三者产物命名与迭代法同构（`{line}_inv_{algo}_*`），自动进入 Step7 对比 / Step8 导出 / Step5 报告。
 
 ---
 
@@ -407,6 +420,10 @@ python tfm_cli_run.py -P D:\data\myfile -O D:\output --inv-algo all --report
 # 快速 DL 成像（先训练权重，再反演）
 python tfm_cli_run.py -P D:\data\myfile -O D:\output --dl-train --dl-samples 4000
 python tfm_cli_run.py -P D:\data\myfile -O D:\output --inv --inv-algo dl --report
+
+# 高级 DL 成像（PINN/MDN/TCN 任选其一）
+python tfm_cli_run.py -P D:\data\myfile -O D:\output --dl-train-adv mdn
+python tfm_cli_run.py -P D:\data\myfile -O D:\output --inv --inv-algo mdn --report
 
 # 全流程含 IP + 导出 + FEM
 python tfm_cli_run.py -P D:\data\myfile -O D:\output \
