@@ -41,12 +41,14 @@ ALGO_LABELS = {
     'occam_adaptive': 'Occam自适应', 'lm_adaptive': 'LM自适应',
     'cgls': 'CGLS', 'mcmc': 'MCMC', 'lci': 'LCI横向约束',
     'dl': 'DL端到端',
+    'pinn': 'PINN物理约束', 'mdn': 'MDN混合密度', 'tcn': 'TCN时序卷积',
 }
 ALGO_COLORS = {
     'trf': '#1f77b4', 'lm': '#2ca02c', 'occam': '#d62728',
     'occam_adaptive': '#ff7f0e', 'lm_adaptive': '#9467bd',
     'cgls': '#8c564b', 'mcmc': '#e377c2', 'lci': '#17becf',
     'dl': '#000000',
+    'pinn': '#7f7f7f', 'mdn': '#bcbd22', 'tcn': '#17a2b8',
 }
 
 

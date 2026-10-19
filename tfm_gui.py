@@ -53,6 +53,8 @@ from tfm_engine.inv_algorithms import (run_all_algo, run_all_algos_compare,
 from tfm_engine.adv_inversion import run_all_advanced, ALGO_ADVANCED, invert_line_advanced
 from tfm_engine.lci_inversion import run_all_lci, invert_line_lci
 from tfm_engine.dl_inversion import run_all_dl, invert_line_dl
+from tfm_engine.dl_advanced import (run_all_advanced_dl, invert_line_advanced_dl,
+                                    _ALGO_MAP as DL_ADV_ALGOS)
 from tfm_engine.current_proc import run_all_current
 from tfm_engine.occam_bridge import materialize_all
 from tfm_engine.forward import (LayeredModel, tem_forward_1d,
@@ -260,7 +262,7 @@ class TFMMainApp:
         ttk.Combobox(lf_hp, textvariable=self.var_inv_algo, width=18, state="readonly",
                      values=["trf", "lm", "occam",
                              "occam_adaptive", "lm_adaptive", "cgls", "mcmc",
-                             "lci", "dl", "all(三算法对比)"]
+                             "lci", "dl", "pinn", "mdn", "tcn", "all(三算法对比)"]
                      ).grid(row=3, column=1, padx=3, pady=3, sticky="w")
 
         # --- 高级反演参数 (occam_adaptive / lm_adaptive / cgls / mcmc) ---
@@ -383,6 +385,11 @@ class TFMMainApp:
             elif algo == 'dl':
                 log_fn(">>> Step3 DL 端到端反演 (U-Net/线性降级, 首次自动训练)")
                 run_all_dl(out, n_layers=inv_cfg.get('N_LAYERS', 25), log_fn=log)
+            elif algo in DL_ADV_ALGOS:
+                label = {'pinn': 'PINN', 'mdn': 'MDN', 'tcn': 'TCN'}[algo]
+                log_fn(f">>> Step3 高级DL反演 [{label}] (首次自动训练权重)")
+                run_all_advanced_dl(out, algo=algo,
+                                    n_layers=inv_cfg.get('N_LAYERS', 25), log_fn=log)
             elif algo in ALGO_ADVANCED:
                 log(f">>> Step3 1D 高级电阻率反演 [algo={algo}]  "
                     f"n_jobs={n_jobs} cache={use_cache} mcmc_samples={mcmc_samples}")
@@ -1654,7 +1661,8 @@ class TFMMainApp:
         self.var_b_inv_algo = tk.StringVar(value="trf")
         ttk.Combobox(lf2, textvariable=self.var_b_inv_algo, width=15, state="readonly",
                      values=['trf', 'lm', 'occam', 'occam_adaptive', 'lm_adaptive',
-                             'cgls', 'mcmc', 'lci', 'dl']).grid(row=0, column=2, padx=4)
+                             'cgls', 'mcmc', 'lci', 'dl', 'pinn', 'mdn', 'tcn']
+                     ).grid(row=0, column=2, padx=4)
         ttk.Checkbutton(lf2, text="多算法对比QC", variable=self.var_b_cmp).grid(
             row=0, column=3, padx=6)
         ttk.Checkbutton(lf2, text="标准化导出", variable=self.var_b_exp).grid(
@@ -1774,6 +1782,10 @@ class TFMMainApp:
                 elif algo == 'dl':
                     r = invert_line_dl(lt, out, n_layers=inv_cfg.get('N_LAYERS', 25),
                                        log_fn=log)
+                elif algo in DL_ADV_ALGOS:
+                    r = invert_line_advanced_dl(lt, out, algo=algo,
+                                                n_layers=inv_cfg.get('N_LAYERS', 25),
+                                                log_fn=log)
                 elif algo in ALGO_ADVANCED:
                     r = invert_line_advanced(lt, out, algo, inv_cfg, n_jobs=1,
                                              use_cache=False,
