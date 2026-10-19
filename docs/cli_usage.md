@@ -168,23 +168,136 @@ python tfm_cli_run.py ... --inv --n-jobs 4 --n-line-jobs 2
 
 ### Step11: IP 激发极化反演
 
+#### 11.1 功能概述
+
+IP（Induced Polarization，激发极化）反演基于 **Pelton Cole-Cole 模型**，
+同时反演**电阻率 ρ₀** 和**极化率 m**（充电率），以及时间常数 τ、频率相关系数 c。
+
+与 Step3 纯电阻率反演的核心区别：
+
+| 维度 | Step3 纯电阻率 | Step11 IP |
+|:---|:---|:---|
+| 物理模型 | 纯欧姆导体 | Cole-Cole 复电阻率 |
+| 待求参数 | 每层 1 个 (ρ) | 每层 2~4 个 (ρ₀, m, τ, c) |
+| 观测数据 | ρa 视电阻率 | **ρa + Vt 双观测** |
+| 输出产物 | ρ 断面 | **ρ₀ / m / τ / c 四组断面** |
+
+#### 11.2 模型参数
+
+每层 4 个物理量（Pelton Cole-Cole）：
+
+| 参数 | 符号 | 物理意义 | 默认约束 |
+|:---|:---|:---|:---|
+| ρ₀ | rho0 | 零频电阻率 (Ω·m) | 0.1 ~ 10⁸ |
+| **m** | chargeability | **极化率/充电率** (无量纲) | 0.001 ~ 0.8 |
+| τ | tau | 时间常数 (s) | 10⁻⁶ ~ 30 |
+| c | c_exp | 频率相关系数 | 0.1 ~ 0.95 |
+
+#### 11.3 两种参数化模式
+
 ```powershell
-# 默认共享 τ,c（稳健，推荐）
+# A) 共享 τ,c（默认，2N+2 参数，稳健推荐）
+#    所有层共用一组 τ,c，只反演每层的 ρ₀ 和 m
 python tfm_cli_run.py ... --ip-inv
 
-# 每层独立 τ,c（高自由度，需好数据）
+# B) 每层独立 τ,c（4N 参数，高自由度，需高质量数据）
+#    每层独立反演 ρ₀, m, τ, c
+python tfm_cli_run.py ... --ip-inv --ip-no-share-tc
+```
+
+| 模式 | 参数数 | 适用场景 | 推荐 |
+|:---|:---|:---|:---:|
+| 共享 τ,c | 2N+2 | 常规数据，快速稳健 | ✓ 推荐 |
+| 每层独立 | 4N | 高品质数据，精细地层刻画 | 数据质量好时用 |
+
+#### 11.4 残差设计
+
+采用**双残差 + 层间平滑**架构：
+
+```
+r_data = [ log10(ρa_pred/ρa_obs)/0.05 ,   ← ρa 残差 (Ng 项)
+           log10(Vt_pred/Vt_obs)/0.08 ]   ← Vt 残差 (Ng 项)
+
+r_smooth = √λ · diff(ρ₀_per_layer)         ← ρ₀ 层间平滑
+         + √λ·0.7 · diff(m_per_layer)      ← m 层间平滑
+```
+
+#### 11.5 双数据路径
+
+IP 反演需要同时有 ρa 和 Vt，系统根据数据可用性自动选择路径：
+
+**路径 A：Vt-only 工业模式（优先，推荐）**
+- 来源：`{line}_decay_curves.npz`（预处理 S4 完整衰减曲线）
+- 特点：直接用真实 Vt 观测（含 IP 弛豫尾部），只拟合 Vt 残差
+- 要求：decay_curves.npz 存在且 `prefer_vt_only=True`
+
+**路径 B：双残差回退模式**
+- 来源：`{line}_occam.dat` 中的 ρa + 由 ρa 反推的 Vt
+- 特点：ρa 和 Vt 同时进入残差
+- 触发：decay NPZ 不存在，或用户关闭 `prefer_vt_only`
+
+> **注意**：若数据在预处理阶段已做 IP 去除（如标准 ρa 处理流程），
+> ρa 中的 IP 信息可能丢失，此时路径 A（直接 Vt）更为可靠。
+
+#### 11.6 使用方法
+
+```powershell
+# 基础：默认共享 τ,c，使用 decay NPZ（若存在）
+python tfm_cli_run.py --project <数据根> --out <输出根> --ip-inv
+
+# 全流程：预处理 + 电阻率反演 + IP 反演 + 报告
+python tfm_cli_run.py --project <数据根> --out <输出根> \
+    --inv --inv-algo trf --ip-inv --report
+
+# 每层独立 τ,c（高自由度）
 python tfm_cli_run.py ... --ip-inv --ip-no-share-tc
 
-# 自定义平滑权重
+# 自定义 IP 平滑权重
 python tfm_cli_run.py ... --ip-inv --ip-lambda 0.5
 ```
 
 | 参数 | 默认 | 说明 |
 |:---|:---|:---|
 | `--ip-inv` | 关 | 启用 IP 反演 |
-| `--ip-share-tc` | True | 全局共享 τ,c（2N+2 参数） |
-| `--ip-no-share-tc` | — | 每层独立 τ,c（4N 参数） |
-| `--ip-lambda` | 0.3 | IP 层间平滑权重 |
+| `--ip-share-tc` | True | 全局共享 τ,c（2N+2 参数，稳健） |
+| `--ip-no-share-tc` | — | 每层独立 τ,c（4N 参数，高自由度） |
+| `--ip-lambda` | 0.3 | IP 层间平滑权重（与 1D ρ 反演一致） |
+
+#### 11.7 输入依赖
+
+| 文件 | 来源 | 用途 |
+|:---|:---|:---|
+| `{line}_occam.dat` | 预处理 Step2 | ρa 观测（初值估计 + 路径 B） |
+| `{line}_decay_curves.npz` | 预处理 Step4（可选） | 真实 Vt 观测（路径 A 优先） |
+
+#### 11.8 输出产物
+
+写入 `out_root/{line}/`：
+
+| 文件 | 内容 | 色标 |
+|:---|:---|:---|
+| `{line}_ip_R_rho.npy` | 电阻率 ρ₀ 断面 (n_st, n_l) | — |
+| `{line}_ip_R_m.npy` | **极化率 m 断面** (n_st, n_l) | — |
+| `{line}_ip_R_tau.npy` | 时间常数 τ 断面 (n_st, n_l) | — |
+| `{line}_ip_R_c.npy` | 频率相关系数 c 断面 (n_st, n_l) | — |
+| `{line}_ip_depth.npy` | 层中心深度 | — |
+| `{line}_ip_inversion_summary.csv` | 每站 RMSE_rhoa / RMSE_vt / nfev / vt_only | — |
+| `{line}_ip_rho_section.png` | ρ₀ 断面图 | jet |
+| `{line}_ip_m_section.png` | **m 断面图** | plasma (vmax=0.5) |
+| `{line}_ip_tau_section.png` | log10τ 断面图 | cividis |
+
+#### 11.9 在流水线中的位置
+
+```
+Step3  1D电阻率反演完成
+    ↓
+Step11 IP反演  ← 在这里（独立步骤，不依赖 Step3 结果）
+    ↓
+Step4  Occam → Step7 对比 → Step5 报告
+```
+
+> IP 反演失败不阻塞主流程，仅记录 warning。因为 IP 是"增值分析"，
+> 即使失败，电阻率反演结果仍完整可用。
 
 ---
 
