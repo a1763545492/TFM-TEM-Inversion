@@ -14,6 +14,7 @@ tfm_cli_run.py — TFM 时频电磁法完整处理 命令行 Headless 入口
 """
 from __future__ import annotations
 import argparse
+import re
 import sys
 import json
 import time
@@ -21,6 +22,8 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+
+import numpy as np
 
 # 保证 import 相对包能工作 (BAT 已 cd 到 tools/)
 _HERE = Path(__file__).resolve().parent
@@ -194,6 +197,52 @@ def build_parser() -> argparse.ArgumentParser:
                    help='多时态对比: 两个期次输出根目录 (共用测线做电阻率变化分析)')
     p.add_argument('--timelapse-labels', default='1,2',
                    help='两期标签, 逗号分隔 (默认 1,2)')
+
+    # ------- Step8: 标准化导出 -------
+    p.add_argument('--export', dest='do_export', action='store_true', default=False,
+                   help='运行 Step8: 标准化导出 (CSV/XYZ/GRD/GeoTIFF)')
+    p.add_argument('--export-formats', default='csv,xyz,grd',
+                   help='导出格式, 逗号分隔 (默认 csv,xyz,grd; 可选 geotiff)')
+    p.add_argument('--export-algo', default=None,
+                   help='导出源算法 (默认与 --inv-algo 一致)')
+    p.add_argument('--export-epsg', type=int, default=None,
+                   help='GeoTIFF EPSG 代码 (如 4326/4547, 可选)')
+    p.add_argument('--export-scale', default='linear', choices=['linear', 'log10'],
+                   help='导出数值标度 (默认 linear)')
+
+    # ------- Step9: 2D FEM 正演 -------
+    p.add_argument('--fem2d', dest='do_fem2d', action='store_true', default=False,
+                   help='运行 Step9: 2D 有限元 DC 正演 (单极-单极拟断面)')
+    p.add_argument('--fem2d-algo', default=None,
+                   help='FEM 正演源断面算法 (默认与 --inv-algo 一致)')
+    p.add_argument('--fem2d-xlim', default='-300,300',
+                   help='X 范围 "x0,x1" (默认 -300,300)')
+    p.add_argument('--fem2d-zmax', type=float, default=300.0,
+                   help='最大深度 m (默认 300)')
+    p.add_argument('--fem2d-nx', type=int, default=160,
+                   help='横向节点数 (默认 160)')
+    p.add_argument('--fem2d-nz', type=int, default=70,
+                   help='垂向节点数 (默认 70)')
+    p.add_argument('--fem2d-spacings', default='5,10,20,40',
+                   help='极距, 逗号分隔 (默认 5,10,20,40)')
+
+    # ------- Step10: VTI 各向异性 -------
+    p.add_argument('--vti', dest='do_vti', action='store_true', default=False,
+                   help='运行 Step10: VTI 各向异性正演对比 (各向同性 vs VTI)')
+    p.add_argument('--vti-lambda', type=float, default=1.5,
+                   help='各向异性系数 λ=√(ρv/ρh) (默认 1.5)')
+    p.add_argument('--vti-algo', default=None,
+                   help='VTI 源断面算法 (默认与 --inv-algo 一致)')
+
+    # ------- Step11: IP 反演 -------
+    p.add_argument('--ip-inv', dest='do_ip', action='store_true', default=False,
+                   help='运行 Step11: 激发极化 (IP) 反演')
+    p.add_argument('--ip-share-tc', dest='ip_share_tc', action='store_true',
+                   default=True, help='IP 共享 τ,c (默认 True, 稳健)')
+    p.add_argument('--ip-no-share-tc', dest='ip_share_tc', action='store_false',
+                   help='IP 每层独立 τ,c (4N 参数, 高自由度)')
+    p.add_argument('--ip-lambda', type=float, default=None,
+                   help='IP 层间平滑权重 (默认 0.3, 与 1D 反演一致)')
     return p
 
 
@@ -229,8 +278,12 @@ def main(argv=None) -> int:
     log_fn(f'  输出根:   {out_root}')
     log_fn(f'  Step1-2 预处理: {args.do_pre}')
     log_fn(f'  Step3   1D反演: {args.do_inv}')
+    log_fn(f'  Step11  IP反演: {args.do_ip}')
     log_fn(f'  Step4   Occam : {args.do_occam}')
     log_fn(f'  Step7   Compare QC : {args.do_compare}')
+    log_fn(f'  Step8   导出  : {args.do_export}')
+    log_fn(f'  Step9   FEM2D : {args.do_fem2d}')
+    log_fn(f'  Step10  VTI   : {args.do_vti}')
     log_fn(f'  Step5   报告  : {args.do_report}')
     log_fn(f'  日志文件: {log_file}')
     log_fn('  ★ 完全离线运行, 数据绝不上传云端')
@@ -327,6 +380,28 @@ def main(argv=None) -> int:
             log_fn(traceback.format_exc())
             rc = 30
 
+    # ---- Step11: IP 激发极化反演 (可选, 依赖预处理 occam.dat) ----
+    if args.do_ip and rc == 0:
+        try:
+            from tfm_engine.ip_inversion import run_all_ip_inversions, DEFAULT_IP_CFG
+            log_fn('\n>>> [Step11] IP 激发极化反演 启动 '
+                   f'share_tc={args.ip_share_tc}')
+            ip_cfg = dict(DEFAULT_IP_CFG)
+            ip_cfg['SHARE_TAU_C'] = args.ip_share_tc
+            if args.ip_lambda is not None:
+                ip_cfg['LAMBDA_SMOOTH'] = args.ip_lambda
+            ip_summary = run_all_ip_inversions(out_root,
+                                               user_cfg=cfg_inv if args.do_inv else None,
+                                               ip_cfg=ip_cfg,
+                                               log_fn=log_fn)
+            summary['ip_inversion'] = ip_summary
+            log_fn('<<< [Step11] IP 反演完成')
+        except Exception as e:
+            log_fn(f'[ERROR] IP 反演失败: {e}')
+            log_fn(traceback.format_exc())
+            # IP 失败不阻塞主流程
+            summary.setdefault('warnings', []).append(f'Step11 ip: {e}')
+
     # ---- Step4: Occam 桥接 ----
     if args.do_occam and rc == 0:
         try:
@@ -356,6 +431,113 @@ def main(argv=None) -> int:
             log_fn(traceback.format_exc())
             # 对比失败不阻塞报告/后续步骤, 仅记录
             summary.setdefault('warnings', []).append(f'Step7 compare: {e}')
+
+    # ---- Step8: 标准化导出 (可选) ----
+    if args.do_export and rc == 0:
+        try:
+            from tfm_engine.export_formats import export_all_lines
+            e_algo = args.export_algo or args.inv_algo
+            if e_algo == 'all':
+                e_algo = 'trf'
+            e_formats = tuple(s.strip() for s in args.export_formats.split(','))
+            log_fn(f'\n>>> [Step8] 标准化导出 启动 algo={e_algo} fmt={e_formats}')
+            exp_summary = export_all_lines(out_root, algo=e_algo,
+                                           formats=e_formats,
+                                           value_scale=args.export_scale,
+                                           epsg=args.export_epsg,
+                                           log_fn=log_fn)
+            summary['export'] = {lt: list(v.keys()) for lt, v in exp_summary.items()}
+            log_fn(f'<<< [Step8] 导出完成 ({len(exp_summary)} 测线)')
+        except Exception as e:
+            log_fn(f'[ERROR] 标准化导出失败: {e}')
+            log_fn(traceback.format_exc())
+            summary.setdefault('warnings', []).append(f'Step8 export: {e}')
+
+    # ---- Step9: 2D FEM 正演 (可选, 基于反演断面) ----
+    if args.do_fem2d and rc == 0:
+        try:
+            from tfm_engine.fem2d_forward import (polepole_pseudosection,
+                                                   rho_from_section,
+                                                   plot_pseudosection)
+            from tfm_engine.export_formats import load_section
+            f_algo = args.fem2d_algo or args.inv_algo
+            if f_algo == 'all':
+                f_algo = 'trf'
+            x0, x1 = [float(v) for v in args.fem2d_xlim.split(',')]
+            spacings = [float(v) for v in args.fem2d_spacings.split(',')]
+            log_fn(f'\n>>> [Step9] 2D FEM 正演 启动 algo={f_algo} '
+                   f'xlim=({x0},{x1}) zmax={args.fem2d_zmax}')
+            fem_results = {}
+            for line_dir in sorted(out_root.iterdir()):
+                if not (line_dir.is_dir() and re.fullmatch(r'[1-5]线', line_dir.name)):
+                    continue
+                lt = line_dir.name
+                try:
+                    sec = load_section(out_root, lt, f_algo)
+                    rho_fn = rho_from_section(sec['R'], sec['chainage'],
+                                              sec['z_centers'])
+                    elec_x = np.linspace(x0 + 50, x1 - 50, 8)
+                    df = polepole_pseudosection(
+                        rho_fn, elec_x,
+                        xlim=(x0, x1), zmax=args.fem2d_zmax,
+                        nx=args.fem2d_nx, nz=args.fem2d_nz,
+                        spacings=spacings, log_fn=log_fn)
+                    out_png = line_dir / f'{lt}_fem2d_pseudo.png'
+                    plot_pseudosection(df, out_png,
+                                       title=f'{lt} 2D FEM 单极-单极拟断面')
+                    df.to_csv(line_dir / f'{lt}_fem2d_pseudo.csv',
+                              index=False, encoding='utf-8-sig')
+                    fem_results[lt] = len(df)
+                    log_fn(f'  {lt}: {len(df)} 个 ρa 记录 → {out_png.name}')
+                except Exception as e:
+                    log_fn(f'  ✗ {lt}: FEM 正演失败: {e}')
+                    fem_results[lt] = {'error': str(e)}
+            summary['fem2d'] = fem_results
+            log_fn(f'<<< [Step9] FEM 正演完成 ({len(fem_results)} 测线)')
+        except Exception as e:
+            log_fn(f'[ERROR] FEM 正演失败: {e}')
+            log_fn(traceback.format_exc())
+            summary.setdefault('warnings', []).append(f'Step9 fem2d: {e}')
+
+    # ---- Step10: VTI 各向异性正演对比 (可选) ----
+    if args.do_vti and rc == 0:
+        try:
+            from tfm_engine.anisotropy import compare_iso_vti
+            from tfm_engine.fem2d_forward import rho_from_section
+            from tfm_engine.export_formats import load_section
+            v_algo = args.vti_algo or args.inv_algo
+            if v_algo == 'all':
+                v_algo = 'trf'
+            lam = args.vti_lambda
+            log_fn(f'\n>>> [Step10] VTI 各向异性正演 启动 algo={v_algo} λ={lam}')
+            vti_results = {}
+            for line_dir in sorted(out_root.iterdir()):
+                if not (line_dir.is_dir() and re.fullmatch(r'[1-5]线', line_dir.name)):
+                    continue
+                lt = line_dir.name
+                try:
+                    sec = load_section(out_root, lt, v_algo)
+                    rho_fn = rho_from_section(sec['R'], sec['chainage'],
+                                              sec['z_centers'])
+                    # 均匀 λ 场
+                    lam_fn = lambda x, z, _l=lam: _l
+                    elec_x = np.linspace(-250, 250, 8)
+                    out_png = line_dir / f'{lt}_vti_compare.png'
+                    m, _ = compare_iso_vti(rho_fn, lam_fn, elec_x,
+                                           out_png, log_fn=log_fn)
+                    m.to_csv(line_dir / f'{lt}_vti_compare.csv',
+                             index=False, encoding='utf-8-sig')
+                    vti_results[lt] = len(m)
+                    log_fn(f'  {lt}: ISO/VTI 对比 {len(m)} 记录 → {out_png.name}')
+                except Exception as e:
+                    log_fn(f'  ✗ {lt}: VTI 正演失败: {e}')
+                    vti_results[lt] = {'error': str(e)}
+            summary['vti'] = vti_results
+            log_fn(f'<<< [Step10] VTI 正演完成 ({len(vti_results)} 测线)')
+        except Exception as e:
+            log_fn(f'[ERROR] VTI 正演失败: {e}')
+            log_fn(traceback.format_exc())
+            summary.setdefault('warnings', []).append(f'Step10 vti: {e}')
 
     # ---- Step5: HTML 报告 (可选, 依赖 Step7 对比产物) ----
     if args.do_report and rc == 0:
