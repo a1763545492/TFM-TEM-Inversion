@@ -181,6 +181,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help='MCMC 采样数 (仅 --inv-algo mcmc 有效, 默认 2000)')
     p.add_argument('--lambda-lat', type=float, default=1.0,
                        help='★ LCI 首选调参. 横向约束权重 (默认 1.0; 越大断面越匀)')
+    p.add_argument('--compare', dest='do_compare', action='store_true', default=True,
+                   help='运行 Step7: 多算法反演结果对比 QC (断面并排/RMSE统计/拟合曲线)')
+    p.add_argument('--no-compare', dest='do_compare', action='store_false',
+                   help='跳过多算法对比')
+    p.add_argument('--compare-algos', default=None,
+                   help='Step7 对比算法白名单 (逗号分隔, 默认扫描全部已有结果)')
     p.add_argument('--report', dest='do_report', action='store_true', default=False,
                    help='流水线结束后一键生成单文件自包含 HTML 报告 (report_gen)')
     p.add_argument('--timelapse', nargs=2, metavar=('EPOCH1_ROOT', 'EPOCH2_ROOT'),
@@ -224,6 +230,8 @@ def main(argv=None) -> int:
     log_fn(f'  Step1-2 预处理: {args.do_pre}')
     log_fn(f'  Step3   1D反演: {args.do_inv}')
     log_fn(f'  Step4   Occam : {args.do_occam}')
+    log_fn(f'  Step7   Compare QC : {args.do_compare}')
+    log_fn(f'  Step5   报告  : {args.do_report}')
     log_fn(f'  日志文件: {log_file}')
     log_fn('  ★ 完全离线运行, 数据绝不上传云端')
     log_fn('=' * 64)
@@ -331,7 +339,25 @@ def main(argv=None) -> int:
             log_fn(traceback.format_exc())
             rc = 40
 
-    # ---- Step5: HTML 报告 (可选) ----
+    # ---- Step7: 多算法对比 QC (反演后跑, 报告前跑便于消费对比产物) ----
+    if args.do_compare and rc == 0:
+        try:
+            from tfm_engine.model_compare import compare_all_lines
+            log_fn('\n>>> [Step7] 多算法反演对比 QC 仪表盘 启动')
+            c_algos = None
+            if args.compare_algos:
+                c_algos = [s.strip() for s in args.compare_algos.split(',')]
+            compare_summary = compare_all_lines(out_root, algos=c_algos,
+                                                log_fn=log_fn)
+            summary['compare'] = {lt: len(rows) for lt, rows in compare_summary.items()}
+            log_fn(f'<<< [Step7] 对比完成 ({len(compare_summary)} 测线)')
+        except Exception as e:
+            log_fn(f'[ERROR] 多算法对比失败: {e}')
+            log_fn(traceback.format_exc())
+            # 对比失败不阻塞报告/后续步骤, 仅记录
+            summary.setdefault('warnings', []).append(f'Step7 compare: {e}')
+
+    # ---- Step5: HTML 报告 (可选, 依赖 Step7 对比产物) ----
     if args.do_report and rc == 0:
         try:
             from tfm_engine.report_gen import generate_report
