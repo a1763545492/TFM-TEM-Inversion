@@ -78,12 +78,16 @@ from tfm_engine.model_compare import compare_all_lines, ALGO_LABELS, compare_lin
 from tfm_engine.report_gen import generate_report
 from tfm_engine.export_formats import export_line
 
+import tfm_engine
+
+_APP_VERSION = tfm_engine.__version__   # 窗口标题/启动日志统一取自包版本, 避免多处硬编码漂移
+
 
 # =====================================================================
 # 主应用
 # =====================================================================
 class TFMMainApp:
-    WINDOW_TITLE = "TFM 时频电磁法完整处理系统 v2.0 (WLF算法集·全离线)"
+    WINDOW_TITLE = f"TFM 时频电磁法完整处理系统 v{_APP_VERSION} (WLF算法集·全离线)"
     WINDOW_SIZE = "1280x820"
 
     def __init__(self, root: tk.Tk):
@@ -1956,7 +1960,7 @@ def main():
     # 缺失的 simpledialog 导入
     import tkinter.simpledialog  # noqa: F401 (used in mdl_edit_cell)
     app = TFMMainApp(root)
-    app.log("TFM GUI v2.0 启动 · WLF 全套算法集 · 100% OFFLINE 纯本地")
+    app.log(f"TFM GUI v{_APP_VERSION} 启动 · WLF 全套算法集 · 100% OFFLINE 纯本地")
     app.log(f"  Python: {sys.executable}")
     app.log(f"  Tools : {_HERE}")
     root.mainloop()

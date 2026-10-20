@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 ================================================================================
-tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0)
+tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v3.0.0)
 ================================================================================
 完全离线，不联网。仅使用本地文件操作 + 标准科学库。
 
@@ -11,7 +11,7 @@ tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0
   - 小写档 (cxxst00Y.dat) = 接收原始采集档 (Y=001/002/003)
   - Np=5 = 一台仪器 1 排列下的 5 次滚动/时间片采集
 
-**模块划分 (v6 共 18 个)**：
+**模块划分 (v3.0 共 33 个)**：
   [v1 基础 6]
   - dat_parser.py    : WLF DAT 二进制格式解析 (Header=2048, int32, shape=(4, 544859, Np))
   - excel_meta.py    : 4 sheets Excel 解析 → StationMap / SectionMap / TxMap
@@ -32,6 +32,27 @@ tfm_engine — 时频电磁法 (TEM/FEM) 线下完整数据处理引擎库 (v2.0
   - adv_inversion.py     : 高级反演 (自适应Occam λ寻优+L曲线 / Nielsen LM / CGLS / MCMC不确定性)
                            + 多进程并行 + 逐站缓存断点续跑
   - debye_inversion.py   : IP 谱反演 (双Cole-Cole / Debye分解 NNLS 弛豫谱)
+  [v5 新增 1]
+  - lci_inversion.py     : LCI 横向约束联合反演 (Auken & Christiansen) + 拟 2D 断面
+  [v6 新增 7] (2025-10)
+  - fem_forward.py       : FEM 频率域 1D 正演 (复电阻率层状递推, 直接频率响应)
+  - static_correction.py : 静态效应/飞行点校正 (Hampel 滤波 + 稳健趋势去除)
+  - resolution.py        : 深度分辨率矩阵 + 灵敏度核 (SVD 截断)
+  - nn_initial.py        : 神经网络初始模型预测 (纯 numpy 全连接)
+  - denoise_ae.py        : 去噪自编码器 (衰减曲线噪声压制)
+  - viz_3d.py            : 拟 2D 断面 / 3D 体可视化 (matplotlib + plotly HTML)
+  - project_db.py        : SQLite 项目库 (测线/测站/反演结果管理)
+  [v7 新增 10] (2026-06 → v3.0.0)
+  - parallel_utils.py    : 多测线 ProcessPool 并行调度 (线级并行, 异常隔离)
+  - model_compare.py     : 多算法反演对比 QC 仪表盘 (断面/拟合/RMSE 统计)
+  - export_formats.py    : 标准化导出 (Surfer XYZ / DSAA-GRD / CSV / GeoTIFF)
+  - report_gen.py        : 自动化单文件 HTML 报告 (图片 base64 内嵌)
+  - timelapse.py         : 多时态监测对比 (电阻率变化率, 网格自动对齐)
+  - fem2d_forward.py     : 2D 有限元 DC 正演 (三角剖分 / PEFC 近源加密 / VTI 单元)
+  - anisotropy.py        : VTI 各向异性 (ρh/ρv, λ 参数化)
+  - dl_inversion.py      : DL 端到端 1D 反演 (1D U-Net, torch 可选 / numpy 降级)
+  - dl_advanced.py       : 高级 DL 反演 (PINN / MDN / TCN, 物理约束 / 不确定度 / 时序卷积)
+  - data_check.py        : Step0.5 数据体检 (结构对齐 / 文件健康 / 坏数据前置检测)
 
 **统一日志接口**：所有模块接受 log_fn(str) 回调。
 ================================================================================
